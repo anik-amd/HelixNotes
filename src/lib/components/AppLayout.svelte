@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount, onDestroy, tick, untrack } from 'svelte';
+	import { MediaQuery } from 'svelte/reactivity';
 	import { listen } from '@tauri-apps/api/event';
 	import Sidebar from './Sidebar.svelte';
 	import NoteList from './NoteList.svelte';
@@ -66,6 +67,19 @@
 	const appWindow = getCurrentWindow();
 	const isMac = navigator.platform.startsWith('Mac');
 	const isMobile = $derived($platformIsMobile);
+	// A tablet in landscape has room for the editor next to the navigation: the notebooks or the
+	// note list stay on the left instead of replacing the note. Narrower windows (phones, a tablet
+	// in portrait or in a split screen) keep one panel at a time.
+	const wideMobileQuery = new MediaQuery('(min-width: 900px)');
+	const tabletLayout = $derived(isMobile && wideMobileQuery.current);
+	// Kept on the device: the vault state is shared with desktops, where collapsing means something else.
+	let tabletNavHidden = $state(localStorage.getItem('helix-tablet-nav-hidden') === '1');
+	const tabletNavShown = $derived(tabletLayout && !tabletNavHidden);
+
+	function setTabletNavHidden(hidden: boolean) {
+		tabletNavHidden = hidden;
+		localStorage.setItem('helix-tablet-nav-hidden', hidden ? '1' : '0');
+	}
 	import { loadVaultState, saveVaultState, readNote, deleteNote, createDailyNote, createBackup, getPendingOpenFile, ackPendingOpenFile, addQuickAccess, removeQuickAccess, getQuickAccess, setTheme, syncNow, setTaskDone, setTaskPriority, setTaskDue } from '$lib/api';
 	import { darkThemes, isAndroid } from '$lib/platform';
 	import { openNoteWindow } from '$lib/utils/window';
@@ -654,12 +668,16 @@
 	// sidebar=0, notelist=1, editor=2. Each forward nav pushes, back pops.
 	let historyDepth = 0;
 	let navFromPopstate = false;
+	let lastMobileView = get(mobileView);
 
 	if (get(platformIsMobile)) {
 		history.replaceState({ mobileView: 'sidebar', depth: 0 }, '');
 
 		$effect(() => {
 			const view = $mobileView;
+			// Going to the notebooks or the note list brings a hidden column back.
+			if (view !== 'editor' && view !== untrack(() => lastMobileView)) untrack(() => setTabletNavHidden(false));
+			lastMobileView = view;
 			if (navFromPopstate) {
 				navFromPopstate = false;
 				return;
@@ -698,7 +716,13 @@
 			}
 			const state = e.state;
 			const targetDepth = state?.depth ?? 0;
+			const leavingEditor = $mobileView === 'editor';
 			historyDepth = targetDepth;
+			if (tabletLayout && leavingEditor && targetDepth === 1) {
+				// The note list is already showing beside the note, so back goes on to the notebooks.
+				$mobileView = 'sidebar';
+				return;
+			}
 			navFromPopstate = true;
 			if (targetDepth === 0) $mobileView = 'sidebar';
 			else if (targetDepth === 1) $mobileView = 'notelist';
@@ -709,8 +733,8 @@
 	}
 
 	function mobileBack() {
-		if ($mobileView === 'editor') $mobileView = 'notelist';
-		else if ($mobileView === 'notelist') $mobileView = 'sidebar';
+		if ($mobileView === 'editor' && !tabletLayout) $mobileView = 'notelist';
+		else $mobileView = 'sidebar';
 	}
 
 	async function trashOpenNote(path: string): Promise<boolean> {
@@ -1145,7 +1169,17 @@
 	<div class="mobile-shell">
 		<!-- Mobile Header -->
 		<div class="mobile-header">
-			{#if $mobileView !== 'sidebar'}
+			{#if tabletLayout}
+				<button class="mobile-header-btn" class:active={!tabletNavHidden} onclick={() => setTabletNavHidden(!tabletNavHidden)}
+					title={tabletNavHidden ? 'Show side panel' : 'Hide side panel'} aria-label={tabletNavHidden ? 'Show side panel' : 'Hide side panel'} aria-pressed={!tabletNavHidden}>
+					<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+						<rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="3" x2="9" y2="21"/>
+					</svg>
+				</button>
+			{/if}
+			{#if tabletLayout && tabletNavHidden}
+				<!-- The hidden column has no title or back step to show. -->
+			{:else if $mobileView !== 'sidebar'}
 				<button class="mobile-header-btn" onclick={mobileBack} aria-label="Go back">
 					<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
 						<path d="M15 18l-6-6 6-6"/>
@@ -1162,7 +1196,7 @@
 					</svg>
 				</div>
 			{/if}
-			{#if $mobileView !== 'editor'}
+			{#if tabletNavShown || (!tabletLayout && $mobileView !== 'editor')}
 				<span class="mobile-header-title">
 					{#if $mobileView === 'sidebar'}
 						HelixNotes
@@ -1177,7 +1211,7 @@
 				{/if}
 			{/if}
 			<div class="mobile-header-actions">
-				{#if $mobileView === 'editor'}
+				{#if $mobileView === 'editor' || (tabletLayout && $activeNotePath)}
 					<button class="mobile-header-btn" class:active={$readOnly} disabled={isTrashedNote($activeNotePath, ownerVault)} onclick={() => ($readOnly = !$readOnly)} title={$readOnly ? 'Edit' : 'View'}>
 						<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
 							{#if $readOnly}
@@ -1250,7 +1284,8 @@
 							<polyline points="16 18 22 12 16 6" /><polyline points="8 6 2 12 8 18" />
 						</svg>
 					</button>
-				{:else}
+				{/if}
+				{#if tabletLayout || $mobileView !== 'editor'}
 					<button class="mobile-header-btn" onclick={() => ($showSearch = true)} title="Search">
 						<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
 							<circle cx="11" cy="11" r="8" />
@@ -1283,14 +1318,14 @@
 		</div>
 
 		<!-- Mobile Content -->
-		<div class="mobile-content">
-			<div class="mobile-panel" class:active={$mobileView === 'sidebar'}>
+		<div class="mobile-content" class:tablet={tabletLayout} class:nav-hidden={tabletLayout && tabletNavHidden}>
+			<div class="mobile-panel" class:active={$mobileView === 'sidebar' && (!tabletLayout || tabletNavShown)}>
 				<Sidebar bind:this={sidebar} onViewChanged={handleViewChanged} onBeforeNoteChange={() => editor?.flushSave() ?? Promise.resolve(true)} onBeforePathMutation={() => editor?.beginPathMutation() ?? Promise.resolve(() => {})} onPathsMoved={handlePathsMoved} />
 			</div>
-			<div class="mobile-panel" class:active={$mobileView === 'notelist'}>
+			<div class="mobile-panel" class:active={tabletLayout ? tabletNavShown && $mobileView !== 'sidebar' : $mobileView === 'notelist'}>
 				<NoteList bind:this={noteList} onNoteSelected={handleNoteSelected} onBeforeNoteSwitch={() => editor?.flushSave() ?? Promise.resolve(true)} onBeforeNoteDuplicate={() => editor?.forceSave() ?? Promise.resolve(true)} onBeforePathMutation={() => editor?.beginPathMutation() ?? Promise.resolve(() => {})} onPathsMoved={handlePathsMoved} onUpdateActiveNote={updateActiveNoteMetadata} onTagsChanged={handleTagsChanged} onRefreshTags={() => { if (!isMobile) void sidebar?.refreshTags(); }} onNoteMoved={() => sidebar?.refresh()} onNoteCreated={(token) => { editor?.focusTitle(token); }} onToggleTask={toggleTask} onSetTaskPriority={changeTaskPriority} onSetTaskDue={changeTaskDue} />
 			</div>
-			<div class="mobile-panel" class:active={$mobileView === 'editor'}>
+			<div class="mobile-panel mobile-editor-panel" class:active={$mobileView === 'editor' || tabletLayout}>
 				<Editor bind:this={editor} onMoveToTrash={trashOpenNote} onOutlineChange={handleOutlineChange} onShowTag={showTagNotes} />
 			</div>
 		</div>
@@ -1638,6 +1673,23 @@
 	.mobile-panel.active {
 		visibility: visible;
 		pointer-events: auto;
+	}
+
+	.mobile-content.tablet .mobile-panel {
+		right: auto;
+		width: 320px;
+		border-right: 1px solid var(--border-color);
+	}
+
+	.mobile-content.tablet .mobile-editor-panel {
+		left: 320px;
+		right: 0;
+		width: auto;
+		border-right: none;
+	}
+
+	.mobile-content.tablet.nav-hidden .mobile-editor-panel {
+		left: 0;
 	}
 
 </style>
