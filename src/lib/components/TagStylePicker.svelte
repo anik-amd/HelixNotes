@@ -12,6 +12,9 @@
 	import TagLabel from './TagLabel.svelte';
 	import {
 		NOTEBOOK_ICON_OPTIONS,
+		COMMON_NOTEBOOK_ICON_COUNT,
+		decodeBuiltinNotebookIcon,
+		isCommonNotebookIcon,
 		encodeBuiltinNotebookIcon,
 		type NotebookIconId
 	} from '$lib/utils/notebook-icons';
@@ -41,6 +44,9 @@
 	const activeColor = $derived(tagColor(tag, $tagStyles));
 	const colorInputValue = $derived(expandHex(activeColor) ?? '#5b6abf');
 	const hasStyle = $derived(!!(activeIcon || activeColor));
+	let showAll = $state<boolean | null>(null);
+	// Starts open when the current icon is one of the extra icons.
+	const expanded = $derived(showAll ?? !isCommonNotebookIcon(decodeBuiltinNotebookIcon(activeIcon)));
 	function publishStyle(target: string, next: TagStyle | null) {
 		if (get(appConfig)?.active_vault !== ownerVault) return;
 		tagStyles.update(styles => applyCommittedTagStyle(styles, target, next));
@@ -154,7 +160,7 @@
 		</header>
 		{#if error}<div class="picker-error" role="alert">{error}</div>{/if}
 		<div class="icon-picker-grid">
-			{#each NOTEBOOK_ICON_OPTIONS as option (option.id)}
+			{#each expanded ? NOTEBOOK_ICON_OPTIONS : NOTEBOOK_ICON_OPTIONS.slice(0, COMMON_NOTEBOOK_ICON_COUNT) as option (option.id)}
 				<button
 					type="button"
 					class="icon-picker-option"
@@ -167,6 +173,9 @@
 					<span>{option.label}</span>
 				</button>
 			{/each}
+			<button type="button" class="icon-picker-more" aria-expanded={expanded} onclick={() => showAll = !expanded}>
+				{expanded ? 'Fewer icons' : 'More icons'}
+			</button>
 		</div>
 		<div class="color-section">
 			<span class="color-label">Color</span>
@@ -344,6 +353,22 @@
 		color: var(--accent);
 	}
 
+	.icon-picker-more {
+		grid-column: 1 / -1;
+		padding: 7px;
+		border: none;
+		border-radius: 8px;
+		background: transparent;
+		color: var(--text-tertiary);
+		font-size: 12px;
+		cursor: pointer;
+	}
+
+	.icon-picker-more:hover {
+		background: var(--bg-hover);
+		color: var(--text-primary);
+	}
+
 	.color-section {
 		display: flex;
 		flex-direction: column;
@@ -456,6 +481,11 @@
 
 	.icon-picker-overlay.mobile .icon-picker-option {
 		min-height: 64px;
+	}
+
+	.icon-picker-overlay.mobile .icon-picker-more {
+		min-height: 44px;
+		font-size: 14px;
 	}
 
 	.icon-picker-overlay.mobile .icon-picker-actions button {

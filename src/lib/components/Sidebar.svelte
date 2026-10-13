@@ -38,6 +38,8 @@
 	import TagStylePicker from './TagStylePicker.svelte';
 	import {
 		NOTEBOOK_ICON_OPTIONS,
+		COMMON_NOTEBOOK_ICON_COUNT,
+		isCommonNotebookIcon,
 		decodeNotebookIcon,
 		encodeBuiltinNotebookIcon,
 		normalizeNotebookIconKey,
@@ -136,6 +138,12 @@
 	let iconPickerNotebook = $state<NotebookEntry | null>(null);
 	let iconPickerElement = $state<HTMLDivElement | null>(null);
 	let iconPickerColor = $state<string | null>(null);
+	let iconPickerShowAll = $state<boolean | null>(null);
+	const iconPickerActive = $derived(iconPickerNotebook
+		? decodeNotebookIcon($notebookIcons[normalizeNotebookIconKey(iconPickerNotebook.relative_path)])?.icon ?? null
+		: null);
+	// Starts open when the current icon is one of the extra icons.
+	const iconPickerExpanded = $derived(iconPickerShowAll ?? !isCommonNotebookIcon(iconPickerActive));
 	let trashContextMenu = $state<{ x: number; y: number } | null>(null);
 	let tagsCollapsed = $state(true);
 	let tagContextMenu = $state<{ x: number; y: number; tag: string } | null>(null);
@@ -636,6 +644,7 @@
 	async function openIconPicker(nb: NotebookEntry) {
 		contextMenu = null;
 		iconPickerColor = decodeNotebookIcon(get(notebookIcons)[normalizeNotebookIconKey(nb.relative_path)])?.color ?? null;
+		iconPickerShowAll = null;
 		iconPickerNotebook = nb;
 		await tick();
 		if (!ownerIsCurrent()) return;
@@ -650,11 +659,11 @@
 		notebookIcons.set(icons);
 	}
 
-	async function handleBuiltinIcon(nb: NotebookEntry, icon: NotebookIconId, close = true) {
+	async function handleBuiltinIcon(nb: NotebookEntry, icon: NotebookIconId | null, close = true) {
 		if (!ownerVault || !ownerIsCurrent()) return;
 		const key = normalizeNotebookIconKey(nb.relative_path);
 		const latest = notebookAppearance.choose(ownerVault, key);
-		const value = encodeBuiltinNotebookIcon(icon, iconPickerColor);
+		const value = icon || iconPickerColor ? encodeBuiltinNotebookIcon(icon, iconPickerColor) : null;
 		iconError = '';
 		try {
 			await notebookAppearance.run(ownerVault, key, latest,
@@ -666,11 +675,12 @@
 		}
 	}
 
-	// The color is kept for the next built-in icon when none is set yet.
+	// A custom image has no color; the choice is kept for the next built-in icon.
 	function handleIconColor(nb: NotebookEntry, color: string | null) {
 		iconPickerColor = color;
-		const current = decodeNotebookIcon(get(notebookIcons)[normalizeNotebookIconKey(nb.relative_path)]);
-		if (current) void handleBuiltinIcon(nb, current.icon, false);
+		const stored = get(notebookIcons)[normalizeNotebookIconKey(nb.relative_path)];
+		const current = decodeNotebookIcon(stored);
+		if (current || !stored) void handleBuiltinIcon(nb, current?.icon ?? null, false);
 	}
 
 	async function handleCustomIcon(nb: NotebookEntry) {
@@ -1076,10 +1086,10 @@
 				</button>
 			</header>
 			<div class="icon-picker-grid">
-				{#each NOTEBOOK_ICON_OPTIONS as option}
+				{#each iconPickerExpanded ? NOTEBOOK_ICON_OPTIONS : NOTEBOOK_ICON_OPTIONS.slice(0, COMMON_NOTEBOOK_ICON_COUNT) as option (option.id)}
 					<button
 						class="icon-picker-option"
-						class:active={decodeNotebookIcon($notebookIcons[normalizeNotebookIconKey(iconPickerNotebook.relative_path)])?.icon === option.id}
+						class:active={iconPickerActive === option.id}
 						style:color={iconPickerColor}
 						aria-label={option.label}
 						title={option.label}
@@ -1089,6 +1099,9 @@
 						<span>{option.label}</span>
 					</button>
 				{/each}
+				<button class="icon-picker-more" aria-expanded={iconPickerExpanded} onclick={() => iconPickerShowAll = !iconPickerExpanded}>
+					{iconPickerExpanded ? 'Fewer icons' : 'More icons'}
+				</button>
 			</div>
 			<div class="icon-color-section">
 				<span class="icon-color-label">Color</span>
@@ -1131,7 +1144,7 @@
 						Use default
 					</button>
 				{/if}
-				<p class="icon-picker-recommendation">Colors apply to the built-in icons. Recommended image size: <strong>1:1 aspect ratio</strong></p>
+				<p class="icon-picker-recommendation">Colors do not apply to custom images. Recommended image size: <strong>1:1 aspect ratio</strong></p>
 			</div>
 		</div>
 	</div>
@@ -1304,18 +1317,18 @@
 			{:else}
 				<span class="chevron-spacer"></span>
 			{/if}
-		<span class="notebook-icon-slot" class:notebook-builtin-icon={!!builtinIcon} style:color={builtinIcon?.color}>
-		{#if builtinIcon}
+		<span class="notebook-icon-slot" class:notebook-builtin-icon={!!builtinIcon?.icon} style:color={builtinIcon?.color}>
+		{#if builtinIcon?.icon}
 			<NotebookGlyph icon={builtinIcon.icon} size={18} />
 		{:else if iconSrc}
 			<img class="notebook-icon" crossorigin="anonymous" src={iconSrc} alt="" />
 		{:else if isCollapsed || nb.children.length === 0}
-			<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="opacity:0.6;flex-shrink:0">
+			<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0" style:opacity={builtinIcon?.color ? 1 : 0.6}>
 				<path d="M2 6h4"/><path d="M2 10h4"/><path d="M2 14h4"/><path d="M2 18h4"/>
 				<path d="M6 2h12a2 2 0 012 2v16a2 2 0 01-2 2H6a2 2 0 01-2-2V4a2 2 0 012-2z"/>
 			</svg>
 		{:else}
-			<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="opacity:0.6;flex-shrink:0">
+			<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0" style:opacity={builtinIcon?.color ? 1 : 0.6}>
 				<path d="M2 6h4"/><path d="M2 10h4"/><path d="M2 14h4"/><path d="M2 18h4"/>
 				<path d="M6 2h12a2 2 0 012 2v16a2 2 0 01-2 2H6a2 2 0 01-2-2V4a2 2 0 012-2z"/>
 				<path d="M10 9h8"/><path d="M10 13h8"/><path d="M10 17h5"/>
@@ -1969,6 +1982,22 @@
 		color: var(--accent);
 	}
 
+	.icon-picker-more {
+		grid-column: 1 / -1;
+		padding: 7px;
+		border: none;
+		border-radius: 8px;
+		background: transparent;
+		color: var(--text-tertiary);
+		font-size: 12px;
+		cursor: pointer;
+	}
+
+	.icon-picker-more:hover {
+		background: var(--bg-hover);
+		color: var(--text-primary);
+	}
+
 	.icon-color-section {
 		display: flex;
 		flex-direction: column;
@@ -2085,6 +2114,11 @@
 
 	.icon-picker-overlay.mobile .icon-picker-option {
 		min-height: 64px;
+	}
+
+	.icon-picker-overlay.mobile .icon-picker-more {
+		min-height: 44px;
+		font-size: 14px;
 	}
 
 	.icon-picker-overlay.mobile .icon-picker-actions button {

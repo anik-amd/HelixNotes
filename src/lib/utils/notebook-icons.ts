@@ -37,6 +37,14 @@ export const NOTEBOOK_ICON_OPTIONS = [
 
 export type NotebookIconId = (typeof NOTEBOOK_ICON_OPTIONS)[number]['id'];
 
+/** The pickers show this many icons until "More icons" is pressed. */
+export const COMMON_NOTEBOOK_ICON_COUNT = 8;
+
+export function isCommonNotebookIcon(icon: NotebookIconId | null | undefined): boolean {
+  if (!icon) return true;
+  return NOTEBOOK_ICON_OPTIONS.findIndex((option) => option.id === icon) < COMMON_NOTEBOOK_ICON_COUNT;
+}
+
 const BUILTIN_PREFIX = 'builtin:';
 const BUILTIN_IDS: Record<NotebookIconId, true> = {
   book: true,
@@ -77,8 +85,8 @@ export function normalizeNotebookIconKey(path: string): string {
   return path.replace(/\\/g, '/');
 }
 
-export function encodeBuiltinNotebookIcon(icon: NotebookIconId, color?: string | null): string {
-  return `${BUILTIN_PREFIX}${icon}${isValidTagColor(color) ? color.toLowerCase() : ''}`;
+export function encodeBuiltinNotebookIcon(icon: NotebookIconId | null, color?: string | null): string {
+  return `${BUILTIN_PREFIX}${icon ?? ''}${isValidTagColor(color) ? color.toLowerCase() : ''}`;
 }
 
 export function decodeBuiltinNotebookIcon(value: string | null | undefined): NotebookIconId | null {
@@ -87,16 +95,18 @@ export function decodeBuiltinNotebookIcon(value: string | null | undefined): Not
   return Object.hasOwn(BUILTIN_IDS, icon) ? icon as NotebookIconId : null;
 }
 
-/** Notebook icons keep their color in the stored value: `builtin:star#e11d48`. */
+/**
+ * Notebook icons keep their color in the stored value: `builtin:star#e11d48`.
+ * `builtin:#e11d48` colors the default notebook glyph.
+ */
 export function decodeNotebookIcon(
   value: string | null | undefined
-): { icon: NotebookIconId; color: string | null } | null {
-  const hash = value?.indexOf('#') ?? -1;
-  if (hash < 0) {
-    const icon = decodeBuiltinNotebookIcon(value);
-    return icon ? { icon, color: null } : null;
-  }
-  const icon = decodeBuiltinNotebookIcon(value!.slice(0, hash));
-  const color = value!.slice(hash);
-  return icon ? { icon, color: isValidTagColor(color) ? color : null } : null;
+): { icon: NotebookIconId | null; color: string | null } | null {
+  if (!value?.startsWith(BUILTIN_PREFIX)) return null;
+  const hash = value.indexOf('#');
+  const icon = decodeBuiltinNotebookIcon(hash < 0 ? value : value.slice(0, hash));
+  const color = hash < 0 ? null : value.slice(hash);
+  const valid = isValidTagColor(color) ? color : null;
+  if (!icon && (!valid || hash !== BUILTIN_PREFIX.length)) return null;
+  return { icon, color: valid };
 }

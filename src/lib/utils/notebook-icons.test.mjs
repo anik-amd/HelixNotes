@@ -18,6 +18,13 @@ test('decodes notebook icons with and without a color', () => {
   assert.deepEqual(decodeNotebookIcon('builtin:star#nope'), { icon: 'star', color: null });
 });
 
+test('colors the default notebook glyph without an icon', () => {
+  assert.equal(encodeBuiltinNotebookIcon(null, '#E11D48'), 'builtin:#e11d48');
+  assert.deepEqual(decodeNotebookIcon('builtin:#e11d48'), { icon: null, color: '#e11d48' });
+  assert.equal(decodeNotebookIcon('builtin:'), null);
+  assert.equal(decodeNotebookIcon('builtin:#nope'), null);
+});
+
 test('ignores custom images and unknown builtin icons', () => {
   assert.equal(decodeNotebookIcon(null), null);
   assert.equal(decodeNotebookIcon('.helixnotes/attachments/icon#1.png'), null);
@@ -27,4 +34,12 @@ test('ignores custom images and unknown builtin icons', () => {
 test('tag icons stay uncolored builtin ids', () => {
   assert.equal(decodeBuiltinNotebookIcon('builtin:star'), 'star');
   assert.equal(decodeBuiltinNotebookIcon('builtin:star#e11d48'), null);
+});
+
+test('only the first icons are common', async () => {
+  const { isCommonNotebookIcon } = await import(new URL('./notebook-icons.ts', import.meta.url));
+  assert.equal(isCommonNotebookIcon(null), true);
+  assert.equal(isCommonNotebookIcon('code'), true);
+  assert.equal(isCommonNotebookIcon('flask'), false);
+  assert.equal(isCommonNotebookIcon('pen'), false);
 });
