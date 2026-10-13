@@ -311,13 +311,16 @@
 		// Local mode: restrict which nodes/edges are visible
 		const localNodeSet = localMode ? localNeighborhood.nodeSet : null;
 		const localEdgeSet = localMode ? localNeighborhood.edgeSet : null;
+		// Edge strokes and arrowheads keep their screen size when zoomed out; scaled with the
+		// graph they thin out below a pixel and the links fade away from the nodes.
+		const edgeScale = 1 / Math.min(zoom, 1);
 
 		// ── Edges ──────────────────────────────────────────────────────────────
 		if (isHovering) {
 			// Dimmed non-connected edges
 			ctx.globalAlpha = 0.06;
 			ctx.strokeStyle = borderColor;
-			ctx.lineWidth = 1;
+			ctx.lineWidth = edgeScale;
 			ctx.beginPath();
 			for (let i = 0; i < edges.length; i++) {
 				if (hoveredEdgeSet.has(i)) continue;
@@ -330,9 +333,11 @@
 			// Highlighted connected edges
 			ctx.globalAlpha = 0.8;
 			ctx.strokeStyle = accent;
-			ctx.lineWidth = 1.5;
+			ctx.lineWidth = 1.5 * edgeScale;
 			ctx.beginPath();
 			for (const i of hoveredEdgeSet) {
+				// A neighbour's links to notes outside the local graph have no node to end on.
+				if (localEdgeSet && !localEdgeSet.has(i)) continue;
 				ctx.moveTo(nodes[edges[i].sourceIdx].x, nodes[edges[i].sourceIdx].y);
 				ctx.lineTo(nodes[edges[i].targetIdx].x, nodes[edges[i].targetIdx].y);
 			}
@@ -341,16 +346,18 @@
 			// Arrowheads on highlighted edges
 			ctx.fillStyle = accent;
 			ctx.globalAlpha = 0.8;
+			const al = 7 * edgeScale, aw = 3.5 * edgeScale;
 			const drawArrow = (tipX: number, tipY: number, ux: number, uy: number) => {
-				const bx = tipX - ux * 7, by = tipY - uy * 7;
+				const bx = tipX - ux * al, by = tipY - uy * al;
 				ctx.beginPath();
 				ctx.moveTo(tipX, tipY);
-				ctx.lineTo(bx - uy * 3.5, by + ux * 3.5);
-				ctx.lineTo(bx + uy * 3.5, by - ux * 3.5);
+				ctx.lineTo(bx - uy * aw, by + ux * aw);
+				ctx.lineTo(bx + uy * aw, by - ux * aw);
 				ctx.closePath();
 				ctx.fill();
 			};
 			for (const i of hoveredEdgeSet) {
+				if (localEdgeSet && !localEdgeSet.has(i)) continue;
 				const e = edges[i];
 				const src = nodes[e.sourceIdx];
 				const tgt = nodes[e.targetIdx];
@@ -370,7 +377,7 @@
 		} else if (isSearching) {
 			// All visible edges faint
 			ctx.strokeStyle = borderColor;
-			ctx.lineWidth = 1;
+			ctx.lineWidth = edgeScale;
 			ctx.globalAlpha = 0.07;
 			ctx.beginPath();
 			for (let i = 0; i < edges.length; i++) {
@@ -392,7 +399,7 @@
 			ctx.stroke();
 		} else {
 			ctx.strokeStyle = borderColor;
-			ctx.lineWidth = isMobile ? 1.5 : 1;
+			ctx.lineWidth = (isMobile ? 1.5 : 1) * edgeScale;
 			ctx.globalAlpha = isMobile ? 0.65 : 0.35;
 			ctx.beginPath();
 			for (let i = 0; i < edges.length; i++) {
