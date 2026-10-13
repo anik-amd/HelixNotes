@@ -10,8 +10,9 @@ import { IMG_GRID_CLOSER, parseImgGridHeader, splitTrailingCloser } from './imag
 
 interface WikiTitle { path: string; title: string }
 export interface MarkdownEnvironment { wikiLinkTitles?: readonly WikiTitle[] }
-const wikiIndexKey = Symbol('wiki-index');
 type WikiIndex = { paths: Map<string, string>; titles: Map<string, { path: string; depth: number }> };
+// One index per titles array: callers replace the array, never mutate it, when a title changes.
+const wikiIndexes = new WeakMap<readonly WikiTitle[], WikiIndex>();
 
 function displayMath(state: StateBlock, startLine: number, endLine: number, silent: boolean): boolean {
   const start = state.bMarks[startLine] + state.tShift[startLine];
@@ -98,7 +99,7 @@ function wikiLink(state: StateInline, silent: boolean): boolean {
   const raw = state.src.slice(state.pos + 2, end);
   if (!raw || raw.includes(']')) return false;
   if (!silent) {
-    let index: WikiIndex | undefined = state.env[wikiIndexKey];
+    let index = wikiIndexes.get(notes);
     if (!index) {
       index = { paths: new Map(), titles: new Map() };
       for (const note of notes) {
@@ -109,7 +110,7 @@ function wikiLink(state: StateInline, silent: boolean): boolean {
         const previous = index.titles.get(title);
         if (!previous || depth < previous.depth) index.titles.set(title, { path: note.path, depth });
       }
-      state.env[wikiIndexKey] = index;
+      wikiIndexes.set(notes, index);
     }
     const pipe = raw.indexOf('|');
     const reference = (pipe < 0 ? raw : raw.slice(0, pipe)).trim();
@@ -397,7 +398,6 @@ export function createEditorMarkdownParser(): MarkdownIt {
   md.renderer.rules.helix_empty = () => '<p></p>\n';
   md.renderer.rules.helix_wiki = (tokens, index, _options, _env, renderer) =>
     `<span${renderer.renderAttrs(tokens[index])}>${md.utils.escapeHtml(tokens[index].content)}</span>`;
-  md.core.ruler.before('block', 'helix_wiki_index', state => { delete state.env[wikiIndexKey]; });
 
   md.core.ruler.after('inline', 'helix_literal_html', literalHtml);
 

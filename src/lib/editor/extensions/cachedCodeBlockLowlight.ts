@@ -35,9 +35,11 @@ export function createCodeBlockHighlightPlugin({
 		const cached = cache.get(node);
 		if (cached) return cached;
 		const language = node.attrs.language || defaultLanguage;
-		const tree = language && lowlight.registered(language)
-			? lowlight.highlight(language, node.textContent)
-			: lowlight.highlightAuto(node.textContent);
+		// A named language without a grammar (mermaid, a typo) stays plain: guessing would run
+		// every registered grammar over the block on each edit.
+		const tree = !language ? lowlight.highlightAuto(node.textContent)
+			: lowlight.registered(language) ? lowlight.highlight(language, node.textContent)
+			: { children: [] };
 		const spans: HighlightSpan[] = [];
 		let offset = 0;
 		function visit(nodes: HighlightNode[], inheritedClass: string) {

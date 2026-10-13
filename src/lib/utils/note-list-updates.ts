@@ -1,6 +1,6 @@
 import type { FileEvent, NoteEntry } from '../types';
 
-const normalize = (path: string) => path.replace(/\\/g, '/');
+const normalize = (path: string) => path.includes('\\') ? path.replace(/\\/g, '/') : path;
 
 /** A delayed watcher/sync batch must not update a different (even nested) vault. */
 export function isCurrentVaultEvent(event: FileEvent, vaultPath: string | null): boolean {
@@ -27,7 +27,8 @@ function belongsToList(note: NoteEntry, key: string, quickAccess: string[]): boo
 /** Patch one note without rescanning the vault, including changes to tag membership. */
 export function updateNoteList(list: NoteEntry[], note: NoteEntry, key: string, quickAccess: string[]): NoteEntry[] {
   if (key === 'trash') return list;
-  const index = list.findIndex((entry) => normalize(entry.path) === normalize(note.path));
+  const notePath = normalize(note.path);
+  const index = list.findIndex((entry) => normalize(entry.path) === notePath);
   if (!belongsToList(note, key, quickAccess)) {
     return index < 0 ? list : list.filter((_, i) => i !== index);
   }

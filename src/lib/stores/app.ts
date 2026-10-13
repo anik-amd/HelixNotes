@@ -278,6 +278,9 @@ export function activateVaultData(vaultPath: string | null): void {
 }
 
 // Derived
+// Entries are replaced, not mutated, when a note changes, so a parsed date stays valid for its entry.
+const noteTimestamps = { created: new WeakMap<NoteEntry, number>(), modified: new WeakMap<NoteEntry, number>() };
+
 export const sortedNotes = derived(
   [notes, sortMode, viewMode, noteOrder],
   ([$notes, $sortMode, $viewMode, $noteOrder]) => {
@@ -291,9 +294,11 @@ export const sortedNotes = derived(
     const dateField = $sortMode === "title" || ($sortMode === "custom" && customSortable)
       ? null
       : $sortMode === "created" ? "created" : "modified";
-    const timestamps = dateField ? new Map<NoteEntry, number>() : null;
+    const timestamps = dateField ? noteTimestamps[dateField] : null;
     if (dateField && timestamps) {
-      for (const note of $notes) timestamps.set(note, Date.parse(note.meta[dateField]));
+      for (const note of $notes) {
+        if (!timestamps.has(note)) timestamps.set(note, Date.parse(note.meta[dateField]));
+      }
     }
 
     const sortFn = (a: NoteEntry, b: NoteEntry) => {

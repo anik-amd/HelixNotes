@@ -100,7 +100,7 @@ test('wiki lookup preserves path precedence, shallowest title and escaped attrib
   assert.doesNotMatch(parser.render('[[Note]]'), /data-wiki-link/);
 });
 
-test('wiki lookup reads titles once per render and refreshes after in-place cache changes', () => {
+test('wiki lookup reads titles once per titles array and refreshes when the array is replaced', () => {
   let reads = 0;
   const notes = Array.from({ length: 250 }, (_, index) => ({
     path: `folder/Note ${index}.md`, get title() { reads++; return `Note ${index}`; },
@@ -108,9 +108,11 @@ test('wiki lookup reads titles once per render and refreshes after in-place cach
   const env = { wikiLinkTitles: notes };
   const source = '[[Note 249]] '.repeat(100);
   parser.render(source, env);
+  parser.render(source, env);
   assert.equal(reads, notes.length);
-  notes[249] = { path: 'Moved.md', title: 'Note 249' };
-  assert.match(parser.render(source, env), /data-path="Moved\.md"/);
+  const updated = notes.slice();
+  updated[249] = { path: 'Moved.md', title: 'Note 249' };
+  assert.match(parser.render(source, { wikiLinkTitles: updated }), /data-path="Moved\.md"/);
 });
 
 test('ordinary and legacy links/images remain functional while unsafe schemes remain rejected', () => {

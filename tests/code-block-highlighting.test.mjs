@@ -148,3 +148,9 @@ test('cache ownership respects highlighter/default-language boundaries and empty
   assert.deepEqual(fixture.calls, [{ language: 'javascript', text: 'const x = 1;' }]);
   assert.deepEqual(keywordRanges(fixture.plugin, state), expectedKeywords(state.doc));
 });
+
+test('a named language without a grammar is left plain instead of guessed', () => {
+  const { plugin, state, calls } = setup([codeBlock('graph TD; A-->B;', 'mermaid'), codeBlock('const a = 1;', null)], null);
+  assert.deepEqual(calls, [{ language: 'auto', text: 'const a = 1;' }]);
+  assert.equal(plugin.getState(state).decorations.find(0, 'graph TD; A-->B;'.length + 2).length, 0);
+});

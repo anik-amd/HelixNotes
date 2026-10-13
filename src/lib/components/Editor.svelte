@@ -2675,7 +2675,8 @@
 
 	let wikiLinkMenu = $state<{ x: number; y: number; query: string; from: number } | null>(null);
 	let wikiLinkSelectedIndex = $state(0);
-	let wikiLinkTitlesCache = $state<NoteTitleEntry[]>([]);
+	// Replaced, never mutated: the markdown parser keeps one lookup index per array.
+	let wikiLinkTitlesCache = $state.raw<NoteTitleEntry[]>([]);
 	let wikiLinkTypedByUser = false;
 	// Disambiguation state: when ]] auto-close finds multiple matches
 	let wikiLinkDisambigEntries = $state<NoteTitleEntry[] | null>(null);
@@ -2811,9 +2812,13 @@
 			const entry = { path, title: event.note.meta.title };
 			const index = wikiLinkTitlesCache.findIndex(note => note.path === path);
 			if (index >= 0) {
-				if (wikiLinkTitlesCache[index].title !== entry.title) wikiLinkTitlesCache[index] = entry;
+				if (wikiLinkTitlesCache[index].title !== entry.title) {
+					const updated = wikiLinkTitlesCache.slice();
+					updated[index] = entry;
+					wikiLinkTitlesCache = updated;
+				}
 			} else {
-				wikiLinkTitlesCache.push(entry);
+				wikiLinkTitlesCache = [...wikiLinkTitlesCache, entry];
 			}
 			if (wikiTitleRefresh) pendingWikiTitleChanges.set(path, entry);
 		} else if (event.event_type === 'remove') {
