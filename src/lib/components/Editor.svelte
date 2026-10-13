@@ -1771,6 +1771,10 @@
 			const clone = svgEl.cloneNode(true) as SVGElement;
 			if (!clone.getAttribute('xmlns')) clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
 			if (!clone.getAttribute('xmlns:xlink')) clone.setAttribute('xmlns:xlink', 'http://www.w3.org/1999/xlink');
+			// The labels inherit their font from the editor; a standalone image has nothing to inherit from.
+			const shown = getComputedStyle(svgEl);
+			clone.style.fontFamily = shown.fontFamily;
+			clone.style.lineHeight = shown.lineHeight;
 
 			// Sanitize: remove external resource references that taint canvas on WebKitGTK ("The operation is insecure")
 			clone.querySelectorAll('image').forEach((img) => {
@@ -1942,7 +1946,9 @@
 						return;
 					}
 					const id = `mermaid-${++renderCounter}`;
-					const { svg } = await mermaid.render(id, source);
+					// Measure labels where the diagram is shown: measured under <body>, they get a
+					// different line height than the editor's and the last line of a box is cut off.
+					const { svg } = await mermaid.render(id, source, container.isConnected ? container : undefined);
 					svgCache.set(source, svg);
 					if (container.isConnected) {
 						container.classList.remove('mermaid-render-loading');
