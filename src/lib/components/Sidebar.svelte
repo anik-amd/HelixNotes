@@ -38,11 +38,12 @@
 	import TagStylePicker from './TagStylePicker.svelte';
 	import {
 		NOTEBOOK_ICON_OPTIONS,
-		decodeBuiltinNotebookIcon,
+		decodeNotebookIcon,
 		encodeBuiltinNotebookIcon,
 		normalizeNotebookIconKey,
 		type NotebookIconId
 	} from '$lib/utils/notebook-icons';
+	import { TAG_COLOR_PRESETS } from '$lib/utils/tag-styles';
 
 	let { onViewChanged = () => {}, onBeforeNoteChange = async () => true, onBeforePathMutation = async () => null, onPathsMoved = async (_old: string, _next: string) => {} }: {
 		onViewChanged?: () => void;
@@ -134,6 +135,7 @@
 	let contextMenu = $state<{ x: number; y: number; notebook: NotebookEntry } | null>(null);
 	let iconPickerNotebook = $state<NotebookEntry | null>(null);
 	let iconPickerElement = $state<HTMLDivElement | null>(null);
+	let iconPickerColor = $state<string | null>(null);
 	let trashContextMenu = $state<{ x: number; y: number } | null>(null);
 	let tagsCollapsed = $state(true);
 	let tagContextMenu = $state<{ x: number; y: number; tag: string } | null>(null);
@@ -633,6 +635,7 @@
 
 	async function openIconPicker(nb: NotebookEntry) {
 		contextMenu = null;
+		iconPickerColor = decodeNotebookIcon(get(notebookIcons)[normalizeNotebookIconKey(nb.relative_path)])?.color ?? null;
 		iconPickerNotebook = nb;
 		await tick();
 		if (!ownerIsCurrent()) return;
@@ -647,20 +650,27 @@
 		notebookIcons.set(icons);
 	}
 
-	async function handleBuiltinIcon(nb: NotebookEntry, icon: NotebookIconId) {
+	async function handleBuiltinIcon(nb: NotebookEntry, icon: NotebookIconId, close = true) {
 		if (!ownerVault || !ownerIsCurrent()) return;
 		const key = normalizeNotebookIconKey(nb.relative_path);
 		const latest = notebookAppearance.choose(ownerVault, key);
-		const value = encodeBuiltinNotebookIcon(icon);
+		const value = encodeBuiltinNotebookIcon(icon, iconPickerColor);
 		iconError = '';
 		try {
 			await notebookAppearance.run(ownerVault, key, latest,
 				() => setNotebookIcon(ownerVault, key, value),
 				() => publishNotebookIcon(key, value));
-			if (ownerIsCurrent() && latest()) iconPickerNotebook = null;
+			if (close && ownerIsCurrent() && latest()) iconPickerNotebook = null;
 		} catch (e) {
 			if (ownerIsCurrent() && latest()) iconError = String(e);
 		}
+	}
+
+	// The color is kept for the next built-in icon when none is set yet.
+	function handleIconColor(nb: NotebookEntry, color: string | null) {
+		iconPickerColor = color;
+		const current = decodeNotebookIcon(get(notebookIcons)[normalizeNotebookIconKey(nb.relative_path)]);
+		if (current) void handleBuiltinIcon(nb, current.icon, false);
 	}
 
 	async function handleCustomIcon(nb: NotebookEntry) {
@@ -1069,7 +1079,8 @@
 				{#each NOTEBOOK_ICON_OPTIONS as option}
 					<button
 						class="icon-picker-option"
-						class:active={$notebookIcons[normalizeNotebookIconKey(iconPickerNotebook.relative_path)] === encodeBuiltinNotebookIcon(option.id)}
+						class:active={decodeNotebookIcon($notebookIcons[normalizeNotebookIconKey(iconPickerNotebook.relative_path)])?.icon === option.id}
+						style:color={iconPickerColor}
 						aria-label={option.label}
 						title={option.label}
 						onclick={() => handleBuiltinIcon(iconPickerNotebook!, option.id)}
@@ -1078,6 +1089,36 @@
 						<span>{option.label}</span>
 					</button>
 				{/each}
+			</div>
+			<div class="icon-color-section">
+				<span class="icon-color-label">Color</span>
+				<div class="icon-swatches">
+					<button
+						class="icon-swatch none"
+						class:active={!iconPickerColor}
+						aria-label="Use default color"
+						title="Default color"
+						onclick={() => handleIconColor(iconPickerNotebook!, null)}
+					></button>
+					{#each TAG_COLOR_PRESETS as preset (preset)}
+						<button
+							class="icon-swatch"
+							class:active={iconPickerColor === preset}
+							style:background={preset}
+							aria-label={`Use ${preset}`}
+							title={preset}
+							onclick={() => handleIconColor(iconPickerNotebook!, preset)}
+						></button>
+					{/each}
+					<label class="icon-swatch custom" title="Custom color">
+						<input
+							type="color"
+							value={iconPickerColor?.length === 7 ? iconPickerColor : '#5b6abf'}
+							oninput={(e) => handleIconColor(iconPickerNotebook!, e.currentTarget.value)}
+							aria-label="Custom icon color"
+						/>
+					</label>
+				</div>
 			</div>
 			<div class="icon-picker-actions">
 				<button onclick={() => handleCustomIcon(iconPickerNotebook!)}>
@@ -1090,7 +1131,7 @@
 						Use default
 					</button>
 				{/if}
-				<p class="icon-picker-recommendation">Recommended size: <strong>1:1 aspect ratio</strong></p>
+				<p class="icon-picker-recommendation">Colors apply to the built-in icons. Recommended image size: <strong>1:1 aspect ratio</strong></p>
 			</div>
 		</div>
 	</div>
@@ -1172,7 +1213,7 @@
 	{@const hasChildren = nb.children.length > 0}
 	{@const isCollapsed = $collapsedNotebooks.includes(nb.path)}
 	{@const iconSrc = getNotebookIconSrc(nb)}
-	{@const builtinIcon = decodeBuiltinNotebookIcon($notebookIcons[normalizeNotebookIconKey(nb.relative_path)])}
+	{@const builtinIcon = decodeNotebookIcon($notebookIcons[normalizeNotebookIconKey(nb.relative_path)])}
 	{#if editingNotebook === nb.path}
 		<div class="notebook-item" style="padding-left: {4 + depth * 16}px">
 			<input
@@ -1263,9 +1304,9 @@
 			{:else}
 				<span class="chevron-spacer"></span>
 			{/if}
-		<span class="notebook-icon-slot" class:notebook-builtin-icon={!!builtinIcon}>
+		<span class="notebook-icon-slot" class:notebook-builtin-icon={!!builtinIcon} style:color={builtinIcon?.color}>
 		{#if builtinIcon}
-			<NotebookGlyph icon={builtinIcon} size={18} />
+			<NotebookGlyph icon={builtinIcon.icon} size={18} />
 		{:else if iconSrc}
 			<img class="notebook-icon" crossorigin="anonymous" src={iconSrc} alt="" />
 		{:else if isCollapsed || nb.children.length === 0}
@@ -1926,6 +1967,65 @@
 
 	.icon-picker-option.active span {
 		color: var(--accent);
+	}
+
+	.icon-color-section {
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+		padding: 0 14px 12px;
+	}
+
+	.icon-color-label {
+		color: var(--text-secondary);
+		font-size: 12px;
+		font-weight: 600;
+	}
+
+	.icon-swatches {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 7px;
+		align-items: center;
+	}
+
+	.icon-swatch {
+		width: 22px;
+		height: 22px;
+		padding: 0;
+		border: 2px solid transparent;
+		border-radius: 50%;
+		background: var(--bg-tertiary);
+		cursor: pointer;
+	}
+
+	.icon-swatch:hover,
+	.icon-swatch.active {
+		border-color: var(--text-primary);
+	}
+
+	.icon-swatch.none {
+		background:
+			linear-gradient(to bottom right, transparent calc(50% - 1px), var(--text-tertiary) calc(50% - 1px), var(--text-tertiary) calc(50% + 1px), transparent calc(50% + 1px)),
+			var(--bg-secondary);
+		border-color: var(--border-color);
+	}
+
+	.icon-swatch.custom {
+		display: grid;
+		place-items: center;
+		overflow: hidden;
+		background: conic-gradient(from 90deg, #e11d48, #eab308, #22c55e, #3b82f6, #8b5cf6, #e11d48);
+	}
+
+	.icon-swatch.custom input {
+		width: 28px;
+		height: 28px;
+		padding: 0;
+		border: none;
+		background: none;
+		cursor: pointer;
+		transform: scale(1.4);
 	}
 
 	.icon-picker-actions {
