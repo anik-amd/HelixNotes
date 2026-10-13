@@ -1491,7 +1491,9 @@
 								<p class="setting-desc" style="margin-bottom: 12px; color: var(--text-tertiary); font-size: 13px;">Current: <strong style="color: var(--text-primary);">{$appConfig?.active_vault?.split('/').pop() ?? 'Unknown'}</strong></p>
 								<button class="import-btn" onclick={async () => { if (!(await onBeforeVaultSwitch())) return; $showSettings = false; $vaultReady = false; }}>
 									<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-										<path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/>
+										<rect x="3" y="3" width="18" height="16" rx="2"/>
+										<circle cx="12" cy="11" r="3.5"/>
+										<path d="M12 7.5V6M12 16v-1.5M7 19v2M17 19v2"/>
 									</svg>
 									Manage Vaults
 								</button>
