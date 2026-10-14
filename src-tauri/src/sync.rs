@@ -820,6 +820,17 @@ fn manifest_entry(hash: String, etag: &str) -> ManifestEntry {
     }
 }
 
+/// `fetched_hash` is the remote content read because the server has no ETag or reports a
+/// different one. Only different bytes are a remote change: some servers hand out a new ETag
+/// for a file nobody touched, and a local edit would then become a conflict copy.
+fn remote_changed(old: Option<&ManifestEntry>, fetched_hash: Option<&str>) -> bool {
+    match (old, fetched_hash) {
+        (None, _) => true,
+        (Some(_), None) => false,
+        (Some(old), Some(hash)) => old.remote_hash.is_empty() || old.remote_hash != hash,
+    }
+}
+
 fn apply_changes(
     client: &WebdavClient,
     vault: &str,
@@ -857,12 +868,7 @@ fn apply_changes(
                         None
                     };
                 let remote_hash = remote_bytes.as_ref().map(|bytes| sha256_hex(bytes));
-                let remote_changed = m.is_none_or(|old| {
-                    old.remote_etag != *etag
-                        || (etag.is_empty()
-                            && (old.remote_hash.is_empty()
-                                || remote_hash.as_deref() != Some(old.remote_hash.as_str())))
-                });
+                let remote_changed = remote_changed(m, remote_hash.as_deref());
                 let local_changed = m.is_none_or(|old| old.local_hash != lf.hash);
                 if !local_changed && !remote_changed {
                     new_m.files.insert(
@@ -952,12 +958,7 @@ fn apply_changes(
                     None
                 };
                 let remote_hash = bytes.as_ref().map(|bytes| sha256_hex(bytes));
-                let remote_changed = m.is_none_or(|old| {
-                    old.remote_etag != *etag
-                        || (etag.is_empty()
-                            && (old.remote_hash.is_empty()
-                                || remote_hash.as_deref() != Some(old.remote_hash.as_str())))
-                });
+                let remote_changed = remote_changed(m, remote_hash.as_deref());
                 if remote_changed {
                     let bytes = match bytes {
                         Some(bytes) => bytes,
@@ -1830,6 +1831,97 @@ mod tests {
         .unwrap();
         assert!(error.contains("Cannot safely delete"));
         assert_eq!(requests.join().unwrap().len(), 1); // GET only, never DELETE
+    }
+
+    // Some servers hand out a new ETag for bytes that did not change. That is not a remote
+    // edit, so a local edit must upload instead of becoming a conflict copy.
+    #[test]
+    fn a_new_etag_for_the_same_remote_bytes_is_not_a_remote_change() {
+        let vault = tempfile::tempdir().unwrap();
+        fs::write(vault.path().join("note.md"), b"mine").unwrap();
+        let root = vault.path().to_str().unwrap();
+        let manifest = SyncManifest {
+            identity: String::new(),
+            files: HashMap::from([(
+                "note.md".into(),
+                manifest_entry(sha256_hex(b"old"), "\"e1\""),
+            )]),
+        };
+        let remote = HashMap::from([("note.md".to_string(), "\"e2\"".to_string())]);
+        // Every download is followed by a PROPFIND that rechecks the ETag.
+        let e2 = r#"<multistatus><response><href>/vault/note.md</href><getetag>&quot;e2&quot;</getetag></response></multistatus>"#;
+        let e3 = r#"<multistatus><response><href>/vault/note.md</href><getetag>&quot;e3&quot;</getetag></response></multistatus>"#;
+        let (client, requests) = webdav_test_client(vec![
+            ("200 OK\r\nETag: \"e2\"", "old"),
+            ("207 Multi-Status", e2),
+            ("204 No Content", ""),
+            ("207 Multi-Status", e3),
+            ("200 OK\r\nETag: \"e3\"", "mine"),
+            ("207 Multi-Status", e3),
+        ]);
+        let (next, summary) = apply_changes(
+            &client,
+            root,
+            &scan_local(root).unwrap(),
+            &remote,
+            &manifest,
+            &mut HashMap::new(),
+            &tokio::sync::Mutex::new(()),
+        )
+        .unwrap();
+        assert_eq!((summary.conflicts, summary.uploaded), (0, 1));
+        assert_eq!(fs::read(vault.path().join("note.md")).unwrap(), b"mine");
+        assert_eq!(fs::read_dir(vault.path()).unwrap().count(), 1);
+        assert_eq!(next.files["note.md"].remote_etag, "\"e3\"");
+        let requests = requests.join().unwrap();
+        assert!(requests[2].starts_with("PUT /vault/note.md "));
+        assert!(requests[2]
+            .to_ascii_lowercase()
+            .contains("if-match: \"e2\""));
+
+        // An untouched note only records the new ETag.
+        fs::write(vault.path().join("note.md"), b"old").unwrap();
+        let (client, requests) = webdav_test_client(vec![
+            ("200 OK\r\nETag: \"e2\"", "old"),
+            ("207 Multi-Status", e2),
+        ]);
+        let (next, summary) = apply_changes(
+            &client,
+            root,
+            &scan_local(root).unwrap(),
+            &remote,
+            &manifest,
+            &mut HashMap::new(),
+            &tokio::sync::Mutex::new(()),
+        )
+        .unwrap();
+        assert_eq!(
+            (summary.conflicts, summary.uploaded, summary.downloaded),
+            (0, 0, 0)
+        );
+        assert_eq!(next.files["note.md"].remote_etag, "\"e2\"");
+        assert_eq!(requests.join().unwrap().len(), 2);
+
+        // A note deleted locally is deleted remotely instead of coming back.
+        fs::remove_file(vault.path().join("note.md")).unwrap();
+        let (client, requests) = webdav_test_client(vec![
+            ("200 OK\r\nETag: \"e2\"", "old"),
+            ("207 Multi-Status", e2),
+            ("204 No Content", ""),
+        ]);
+        let (_, summary) = apply_changes(
+            &client,
+            root,
+            &HashMap::new(),
+            &remote,
+            &manifest,
+            &mut HashMap::new(),
+            &tokio::sync::Mutex::new(()),
+        )
+        .unwrap();
+        assert_eq!((summary.deleted_remote, summary.downloaded), (1, 0));
+        assert!(!vault.path().join("note.md").exists());
+        assert!(requests.join().unwrap()[2].starts_with("DELETE /vault/note.md "));
     }
 
     #[test]
