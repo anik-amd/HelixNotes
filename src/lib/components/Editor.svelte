@@ -2950,7 +2950,9 @@
 		// the user to edit a title in-place. Moving the cursor one step past the mark
 		// exits it, so typing plain text after a link still works normally.
 		inclusive: true,
-		excludes: 'link',
+		// Naming `link` alone would let two wikiLink marks sit on the same text, and
+		// updating a link's attrs would then write `[[Old|[[New]]]]`.
+		excludes: 'wikiLink link',
 		addAttributes() {
 			return {
 				title: { default: null },
