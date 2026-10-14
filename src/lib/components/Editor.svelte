@@ -3431,6 +3431,22 @@
 		return convertFileSrc(normalizePath(local.path)) + local.suffix;
 	}
 
+	// A web image whose load fails stays blank until the note is drawn again, so ask again a
+	// few times. Counted per address, because the editor may replace the element meanwhile.
+	const imageRetries = new Map<string, number>();
+	function retryFailedImage(event: Event) {
+		const image = event.target;
+		if (!(image instanceof HTMLImageElement)) return;
+		const src = image.getAttribute('src') ?? '';
+		if (!src.startsWith('imgproxy:') && !src.startsWith('http://imgproxy.localhost') && !src.startsWith('https://imgproxy.localhost')) return;
+		const attempt = imageRetries.get(src) ?? 0;
+		if (attempt >= 3) return;
+		imageRetries.set(src, attempt + 1);
+		setTimeout(() => {
+			if (image.isConnected && image.getAttribute('src') === src) image.src = src;
+		}, 1000 * 3 ** attempt);
+	}
+
 	function normalizeImageHtml(html: string): string {
 		if (!/<img\b/i.test(html)) return html;
 		// Template contents are inert: parsing raw image HTML must not fetch its
@@ -4037,6 +4053,7 @@
 
 	export function loadNote(path: string, content: string, taskTarget?: TaskRecord) {
 		loadFailure = null;
+		imageRetries.clear();
 		cancelProgressiveLoad();
 		endToolbarCustomization();
 		clearOutline();
@@ -8194,13 +8211,13 @@
 				{#if isMobile}
 					<SourceEditor controller={source} readonly={showHistory || $readOnly || !!$viewerNote || externalOperationBusy} visible={$sourceMode} mobile />
 					<!-- svelte-ignore a11y_no_static_element_interactions -->
-					<div class="tiptap-wrapper" class:large-doc={isLargeDoc} style={$sourceMode ? 'display:none' : ''} spellcheck="false" bind:this={editorElement} onclick={(e) => { closeLinkContextMenu(); handleEditorClick(e); }} onkeydown={(e) => { if (e.key === 'Escape') closeLinkContextMenu(); }}></div>
+					<div class="tiptap-wrapper" class:large-doc={isLargeDoc} style={$sourceMode ? 'display:none' : ''} spellcheck="false" bind:this={editorElement} onerrorcapture={retryFailedImage} onclick={(e) => { closeLinkContextMenu(); handleEditorClick(e); }} onkeydown={(e) => { if (e.key === 'Escape') closeLinkContextMenu(); }}></div>
 				{:else}
 					{#if $sourceMode}
 						<SourceEditor controller={source} readonly={showHistory || $readOnly || !!$viewerNote || externalOperationBusy} numbers={$appConfig?.show_line_numbers ?? false} />
 					{:else}
 						<!-- svelte-ignore a11y_no_static_element_interactions -->
-						<div class="tiptap-wrapper" class:large-doc={isLargeDoc} spellcheck="false" bind:this={editorElement} onclick={(e) => { closeLinkContextMenu(); handleEditorClick(e); }} onkeydown={(e) => { if (e.key === 'Escape') closeLinkContextMenu(); }} oncontextmenu={handleEditorContextMenu}></div>
+						<div class="tiptap-wrapper" class:large-doc={isLargeDoc} spellcheck="false" bind:this={editorElement} onerrorcapture={retryFailedImage} onclick={(e) => { closeLinkContextMenu(); handleEditorClick(e); }} onkeydown={(e) => { if (e.key === 'Escape') closeLinkContextMenu(); }} oncontextmenu={handleEditorContextMenu}></div>
 					{/if}
 				{/if}
 			</div>
