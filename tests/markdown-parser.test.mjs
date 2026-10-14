@@ -276,3 +276,17 @@ test('HTML comments are kept as text, the blank-line marker is not', () => {
   assert.equal(parser.render('one\n\n<!-- -->\n\ntwo'), '<p>one</p>\n<p></p>\n<p>two</p>\n');
   assert.equal(parser.render('x <!-- --> y'), '<p>x <!-- --> y</p>\n');
 });
+
+test('an empty paragraph marker glued to an image by older versions still shows the image', () => {
+  const html = parser.render('Before\n\n<!-- -->![](a.png)\n![](b.png)\n\nAfter');
+  assert.match(html, /<p><\/p>/);
+  assert.equal((html.match(/<img /g) ?? []).length, 2);
+  assert.doesNotMatch(html, /&lt;!--|!\[\]|<!--/);
+  assert.match(html, /<p>After<\/p>/);
+  const indented = parser.render('   <!-- -->  ![](a.png)');
+  assert.equal((indented.match(/<img /g) ?? []).length, 1);
+  assert.doesNotMatch(indented, /<pre>/);
+  // Anything else after the marker is still raw HTML, and code keeps the line as written.
+  assert.match(parser.render('<!-- -->text'), /^<!-- -->text/);
+  assert.equal(unescape(escapedCode(parser.render('```\n<!-- -->![](a.png)\n```'))), '<!-- -->![](a.png)');
+});

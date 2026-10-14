@@ -276,14 +276,28 @@ function legacyLink(state: StateInline, silent: boolean): boolean {
   return true;
 }
 
-function emptyParagraph(state: StateBlock, startLine: number, _endLine: number, silent: boolean): boolean {
+const EMPTY_PARAGRAPH_MARKER = '<!-- -->';
+
+function emptyParagraph(state: StateBlock, startLine: number, endLine: number, silent: boolean): boolean {
   const from = state.bMarks[startLine] + state.tShift[startLine];
-  if (state.src.slice(from, state.eMarks[startLine]).trim() !== '<!-- -->') return false;
+  const line = state.src.slice(from, state.eMarks[startLine]);
+  // Versions before 1.3.7 glued the marker to a following image (`<!-- -->![](a.png)`), which
+  // reads as a raw HTML line and showed the image as text. Read it as the empty paragraph and the
+  // image it was written from.
+  const glued = line.startsWith(EMPTY_PARAGRAPH_MARKER) && line.slice(EMPTY_PARAGRAPH_MARKER.length).trimStart().startsWith('![');
+  if (!glued && line.trim() !== EMPTY_PARAGRAPH_MARKER) return false;
   if (silent) return true;
   const token = state.push('helix_empty', 'p', 0);
   token.block = true;
   token.map = [startLine, startLine + 1];
-  state.line = startLine + 1;
+  if (!glued) {
+    state.line = startLine + 1;
+    return true;
+  }
+  const rest = from + EMPTY_PARAGRAPH_MARKER.length;
+  state.bMarks[startLine] = rest;
+  state.tShift[startLine] = state.src.slice(rest, state.eMarks[startLine]).search(/\S/);
+  state.md.block.tokenize(state, startLine, endLine);
   return true;
 }
 
