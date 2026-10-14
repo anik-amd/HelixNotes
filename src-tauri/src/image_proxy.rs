@@ -1,9 +1,14 @@
-use reqwest::{blocking::Client, redirect::Policy, Url};
+use reqwest::{
+    blocking::{Client, Response},
+    redirect::Policy,
+    StatusCode, Url,
+};
 use std::io::Read;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs};
 use std::time::Duration;
 
 const MAX_IMAGE_BYTES: u64 = 20 * 1024 * 1024;
+const MAX_REDIRECTS: usize = 5;
 
 pub struct ImageResponse {
     pub content_type: String,
@@ -136,37 +141,55 @@ fn resolve_public_host(url: &Url) -> Result<(String, Vec<SocketAddr>), ProxyErro
     Ok((host, addresses))
 }
 
+// Redirects are followed by `fetch`, one hop at a time, so every hop gets the same checks.
 fn image_client(host: &str, addresses: &[SocketAddr]) -> Result<Client, ProxyError> {
-    let redirect_host = host.to_string();
     Client::builder()
         .timeout(Duration::from_secs(30))
-        .redirect(Policy::custom(move |attempt| {
-            let redirected_elsewhere = match attempt.url().host_str() {
-                Some(host) => normalized_host(host) != redirect_host,
-                None => true,
-            };
-            if attempt.previous().len() >= 5
-                || redirected_elsewhere
-                || validate_url(attempt.url().as_str()).is_err()
-            {
-                attempt.stop()
-            } else {
-                attempt.follow()
-            }
-        }))
+        .redirect(Policy::none())
         .resolve_to_addrs(host, addresses)
         .build()
         .map_err(|error| ProxyError::Fetch(format!("Could not create image client: {error}")))
 }
 
+/// The validated target of a redirect response, or `None` when the response is not a redirect.
+fn redirect_target(
+    url: &Url,
+    status: StatusCode,
+    location: Option<&str>,
+) -> Result<Option<Url>, ProxyError> {
+    if !matches!(status.as_u16(), 301 | 302 | 303 | 307 | 308) {
+        return Ok(None);
+    }
+    let target = location
+        .and_then(|location| url.join(location).ok())
+        .ok_or_else(|| ProxyError::Fetch("Image redirect has no usable target".into()))?;
+    validate_url(target.as_str()).map(Some)
+}
+
 pub fn fetch(raw_url: &str) -> Result<ImageResponse, ProxyError> {
-    let url = validate_url(raw_url)?;
-    let (host, addresses) = resolve_public_host(&url)?;
-    let client = image_client(&host, &addresses)?;
-    let mut response = client
-        .get(url)
-        .send()
-        .map_err(|error| ProxyError::Fetch(format!("Image request failed: {error}")))?;
+    let mut url = validate_url(raw_url)?;
+    for _ in 0..=MAX_REDIRECTS {
+        // Each hop is resolved, checked for private addresses and pinned to that answer,
+        // so a redirect cannot reach a host that a direct image URL could not.
+        let (host, addresses) = resolve_public_host(&url)?;
+        let client = image_client(&host, &addresses)?;
+        let response = client
+            .get(url.clone())
+            .send()
+            .map_err(|error| ProxyError::Fetch(format!("Image request failed: {error}")))?;
+        let location = response
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .and_then(|value| value.to_str().ok());
+        match redirect_target(&url, response.status(), location)? {
+            Some(target) => url = target,
+            None => return read_image(response),
+        }
+    }
+    Err(ProxyError::Fetch("Image redirected too many times".into()))
+}
+
+fn read_image(mut response: Response) -> Result<ImageResponse, ProxyError> {
     if !response.status().is_success() {
         return Err(ProxyError::Fetch(format!(
             "Image server returned {}",
@@ -204,7 +227,8 @@ pub fn fetch(raw_url: &str) -> Result<ImageResponse, ProxyError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_public_ip, validate_url};
+    use super::{is_public_ip, redirect_target, validate_url};
+    use reqwest::{StatusCode, Url};
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
     #[test]
@@ -241,5 +265,40 @@ mod tests {
         }
         assert!(validate_url("https://example.com/image.png").is_ok());
         assert!(validate_url("http://93.184.216.34/image.png").is_ok());
+    }
+
+    #[test]
+    fn redirects_are_followed_to_other_public_hosts_only() {
+        let url = Url::parse("https://example.com/a/image.png").unwrap();
+        let target = |status: u16, location: Option<&str>| {
+            redirect_target(&url, StatusCode::from_u16(status).unwrap(), location)
+        };
+        let ok = |status, location| target(status, Some(location)).ok().unwrap().unwrap();
+        assert_eq!(
+            ok(301, "https://cdn.example.net/image.png").as_str(),
+            "https://cdn.example.net/image.png"
+        );
+        assert_eq!(
+            ok(302, "/b/image.png").as_str(),
+            "https://example.com/b/image.png"
+        );
+        assert_eq!(
+            ok(307, "other.png").as_str(),
+            "https://example.com/a/other.png"
+        );
+        assert!(target(200, None).ok().unwrap().is_none());
+        assert!(target(304, None).ok().unwrap().is_none());
+        for location in [
+            "http://localhost/image.png",
+            "http://127.0.0.1/image.png",
+            "http://169.254.169.254/latest/meta-data",
+            "http://[::1]/image.png",
+            "https://example.net:8443/image.png",
+            "https://user:pass@example.net/image.png",
+            "file:///etc/passwd",
+        ] {
+            assert!(target(302, Some(location)).is_err(), "{location}");
+        }
+        assert!(target(302, None).is_err());
     }
 }
