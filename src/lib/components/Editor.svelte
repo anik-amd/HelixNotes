@@ -2724,6 +2724,18 @@
 		return scored;
 	});
 
+	let wikiLinkVisible = $derived(wikiLinkFiltered.slice(0, 12));
+	// The note name typed after `[[` when no note has that title yet.
+	let wikiLinkCreateTitle = $derived.by(() => {
+		if (!wikiLinkMenu || wikiLinkDisambigEntries) return null;
+		const noteRef = wikiLinkMenu.query.split('|')[0].replace(/#.*$/, '').replace(/\^.*$/, '');
+		const title = noteRef.split('/').pop()!.trim();
+		if (!title) return null;
+		const lower = title.toLowerCase();
+		return wikiLinkTitlesCache.some(e => e.title.toLowerCase() === lower) ? null : title;
+	});
+	let wikiLinkRowCount = $derived(wikiLinkVisible.length + (wikiLinkCreateTitle ? 1 : 0));
+
 	// Set of lowercase titles that appear more than once (for disambiguation display)
 	let wikiLinkDuplicateTitles = $derived.by(() => {
 		const counts = new Map<string, number>();
@@ -2933,8 +2945,55 @@
 		editor.view.focus();
 	}
 
+	// Inserts the link right away, then creates the note and points the link at it.
+	async function createNoteFromWikiLinkMenu() {
+		const title = wikiLinkCreateTitle;
+		const origin = captureOrigin();
+		if (!editor || !wikiLinkMenu || !title || !canInsert(origin)) return;
+		const rawQuery = wikiLinkMenu.query;
+		const pipeIdx = rawQuery.indexOf('|');
+		const noteRef = (pipeIdx >= 0 ? rawQuery.slice(0, pipeIdx) : rawQuery).trim();
+		const display = (pipeIdx >= 0 ? rawQuery.slice(pipeIdx + 1).trim() : '') || noteRef;
+		const transaction = replaceWithWikiLink(
+			editor.state,
+			wikiLinkMenu.from,
+			editor.state.selection.from,
+			display,
+			{ title: noteRef, path: '', aliased: display !== noteRef },
+		);
+		closeWikiLinkMenu();
+		editor.view.dispatch(transaction);
+		editor.view.focus();
+		const notebookRel = origin.path!.replace(/\\/g, '/').replace(origin.vault!.replace(/\\/g, '/') + '/', '').split('/').slice(0, -1).join('/');
+		try {
+			const { createNote } = await import('$lib/api');
+			const created = await createNote(origin.vault!, notebookRel || null, title);
+			refreshWikiLinkTitles();
+			if (!editor || !isOriginCurrent(origin)) return;
+			const path = normalizeWikiPath(created.path);
+			const tr = editor.state.tr;
+			editor.state.doc.descendants((node: any, pos: number) => {
+				const mark = node.isText && node.marks.find((m: any) => m.type.name === 'wikiLink');
+				if (!mark || mark.attrs.path || mark.attrs.title !== noteRef) return;
+				tr.addMark(pos, pos + node.nodeSize, mark.type.create({ ...mark.attrs, path }));
+			});
+			if (!tr.steps.length) return;
+			// Keep text typed right after the link out of it, as when the link was inserted.
+			tr.setStoredMarks(editor.state.storedMarks);
+			ignoreNextUpdate = true;
+			editor.view.dispatch(tr);
+			ignoreNextUpdate = false;
+		} catch (e) {
+			console.error('Failed to create note from wiki-link menu:', e);
+		}
+	}
+
 	function executeWikiLinkCommand(index: number) {
 		const items = wikiLinkFiltered;
+		if (index >= wikiLinkVisible.length && wikiLinkCreateTitle) {
+			void createNoteFromWikiLinkMenu();
+			return;
+		}
 		if (index < 0 || index >= items.length) return;
 		if (wikiLinkDisambigEntries) {
 			// In disambiguation mode: use stored display/ref
@@ -3057,16 +3116,16 @@
 							if (!wikiLinkMenu) return false;
 							if (event.key === 'ArrowDown') {
 								event.preventDefault();
-								wikiLinkSelectedIndex = (wikiLinkSelectedIndex + 1) % Math.max(1, wikiLinkFiltered.length);
+								wikiLinkSelectedIndex = (wikiLinkSelectedIndex + 1) % Math.max(1, wikiLinkRowCount);
 								return true;
 							}
 							if (event.key === 'ArrowUp') {
 								event.preventDefault();
-								wikiLinkSelectedIndex = (wikiLinkSelectedIndex - 1 + wikiLinkFiltered.length) % Math.max(1, wikiLinkFiltered.length);
+								wikiLinkSelectedIndex = (wikiLinkSelectedIndex - 1 + wikiLinkRowCount) % Math.max(1, wikiLinkRowCount);
 								return true;
 							}
 							if (event.key === 'Enter' || event.key === 'Tab') {
-								if (wikiLinkFiltered.length > 0) {
+								if (wikiLinkRowCount > 0) {
 									event.preventDefault();
 									executeWikiLinkCommand(wikiLinkSelectedIndex);
 									return true;
@@ -9095,12 +9154,12 @@
 	<!-- svelte-ignore a11y_no_static_element_interactions -->
 	<div class="wiki-link-overlay" onclick={(e) => closeFromOverlay(e, closeWikiLinkMenu)} onkeydown={(e) => closeOnEscape(e, closeWikiLinkMenu)}>
 		<div class="wiki-link-menu" style="left: {wikiLinkMenu.x}px; top: {wikiLinkMenu.y}px">
-			{#if wikiLinkFiltered.length === 0}
+			{#if wikiLinkRowCount === 0}
 				<div class="wiki-link-empty">
 					{wikiLinkMenu.query ? 'No matching notes' : 'Type to search notes...'}
 				</div>
 			{:else}
-				{#each wikiLinkFiltered.slice(0, 12) as entry, i}
+				{#each wikiLinkVisible as entry, i}
 					<button
 						class="wiki-link-item"
 						class:selected={i === wikiLinkSelectedIndex}
@@ -9116,6 +9175,19 @@
 						</span>
 					</button>
 				{/each}
+				{#if wikiLinkCreateTitle}
+					<button
+						class="wiki-link-item"
+						class:selected={wikiLinkSelectedIndex === wikiLinkVisible.length}
+						onmouseenter={() => wikiLinkSelectedIndex = wikiLinkVisible.length}
+						onmousedown={(e) => { e.preventDefault(); void createNoteFromWikiLinkMenu(); }}
+					>
+						<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V9z"/><polyline points="13 2 13 9 20 9"/><path d="M12 12v6M9 15h6"/></svg>
+						<span class="wiki-link-title-col">
+							<span class="wiki-link-title">Create note "{wikiLinkCreateTitle}"</span>
+						</span>
+					</button>
+				{/if}
 			{/if}
 		</div>
 	</div>
