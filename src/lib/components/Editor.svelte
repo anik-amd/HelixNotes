@@ -735,7 +735,7 @@
 	});
 	let textContextMenu = $state<{ x: number; y: number; submenuLeft: boolean } | null>(null);
 	let tableContextMenu = $state<{ x: number; y: number; hasStyling: boolean } | null>(null);
-	let imageToolbar = $state<{ pos: number; x: number; y: number; size: string; src: string; alt: string; title: string; inGrid: boolean } | null>(null);
+	let imageToolbar = $state<{ pos: number; x: number; y: number; size: string; src: string; alt: string; title: string; inGrid: boolean; canGroup: boolean } | null>(null);
 	let imageTitleModal = $state<{ title: string } | null>(null);
 	let imageViewer = $state<{ src: string; alt: string } | null>(null);
 	let copyToast = $state<'copying' | 'done' | null>(null);
@@ -6040,7 +6040,8 @@
 			const x = Math.max(8, Math.min(event.clientX, window.innerWidth - toolbarW - 8));
 			const y = Math.max(8, Math.min(event.clientY, window.innerHeight - toolbarH - 8));
 			const inGrid = editor.state.doc.resolve(pos).parent.type.name === 'imageGrid';
-			imageToolbar = { pos, x, y, size: currentSize, src: imgSrc, alt: imgAlt, title: imgTitle, inGrid };
+			const canGroup = !inGrid && !!nearbyImageRange(editor.state, pos).range;
+			imageToolbar = { pos, x, y, size: currentSize, src: imgSrc, alt: imgAlt, title: imgTitle, inGrid, canGroup };
 			// Move cursor after the image to clear ProseMirror's node selection highlight
 			const afterPos = pos + (node?.nodeSize || 1);
 			editor.chain().setTextSelection(afterPos).run();
@@ -6491,27 +6492,38 @@
 				content: sources.map((src) => ({ type: 'image', attrs: { src } })) });
 	}
 
+	// Images on consecutive lines share one paragraph, joined by a line break that reads as a space.
 	function countBlockImages(node: ProseMirrorNode): number {
 		if (node.type.name === 'imageGrid') return node.childCount;
-		if (!isImageNode(node)) return 0;
+		if (node.type.name === 'image') return 1;
+		if (node.type.name !== 'paragraph') return 0;
 		let count = 0;
-		node.forEach((child) => { if (child.type.name === 'image') count++; });
-		return count;
+		let other = false;
+		node.forEach((child) => {
+			if (child.type.name === 'image') count++;
+			else if (child.type.name !== 'hardBreak' && !(child.isText && !child.text?.trim())) other = true;
+		});
+		return other ? 0 : count;
 	}
 
-	/** Group the toolbar's image and its neighboring image-only blocks (and grids) into one grid. */
-	function wrapNearbyImagesInGrid() {
-		if (!editor || !imageToolbar) return;
-		const { state } = editor;
+	/** Top-level blocks and the run of image blocks around `pos`, or no range when there is nothing to group. */
+	function nearbyImageRange(state: EditorState, pos: number) {
 		const blocks: { node: ProseMirrorNode; offset: number }[] = [];
 		state.doc.forEach((node, offset) => blocks.push({ node, offset }));
-		const { pos } = imageToolbar;
 		const target = blocks.findIndex((block) => pos >= block.offset && pos < block.offset + block.node.nodeSize);
 		const range = expandImageRange(blocks.map((block) => ({
 			isImage: countBlockImages(block.node) > 0,
 			imageCount: countBlockImages(block.node),
 			isEmpty: block.node.type.name === 'paragraph' && block.node.childCount === 0,
 		})), target);
+		return { blocks, range };
+	}
+
+	/** Group the toolbar's image and its neighboring image-only blocks (and grids) into one grid. */
+	function wrapNearbyImagesInGrid() {
+		if (!editor || !imageToolbar) return;
+		const { state } = editor;
+		const { blocks, range } = nearbyImageRange(state, imageToolbar.pos);
 		if (!range) return;
 		const images: ProseMirrorNode[] = [];
 		for (let i = range.start; i <= range.end; i++) {
@@ -8805,7 +8817,7 @@
 				<button onclick={() => moveGridImage(-1)} title="Move left in grid" aria-label="Move left in grid">←</button>
 				<button onclick={() => moveGridImage(1)} title="Move right in grid" aria-label="Move right in grid">→</button>
 			{:else}
-				<button onclick={wrapNearbyImagesInGrid} title="Group neighboring images into a grid">Grid</button>
+				<button onclick={wrapNearbyImagesInGrid} disabled={!imageToolbar.canGroup} title={imageToolbar.canGroup ? 'Group neighboring images into a grid' : 'Put another image right above or below this one to make a grid'}>Grid</button>
 			{/if}
 			{#if isAndroid}
 				<span class="img-toolbar-sep"></span>
