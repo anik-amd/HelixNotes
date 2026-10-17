@@ -182,7 +182,9 @@ fn imported_document_links_remain_managed_and_stable_after_note_and_notebook_mov
             .as_ref(),
     );
     assert_eq!(fs::read(attachment).unwrap(), b"pdf");
-    let moved = super::operations::move_note(&vault, &note.path, &vault).unwrap();
+    let moved = super::operations::move_note(&vault, &note.path, &vault)
+        .unwrap()
+        .0;
     assert_eq!(fs::read_to_string(moved).unwrap(), note.raw);
     // Imported managed paths remain stable when their containing notebook is moved too.
     let second = import_note(

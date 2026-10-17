@@ -1320,12 +1320,10 @@ pub struct RewrittenNote {
     pub new_raw: String,
 }
 
-/// What a rename changed in the notes that link to the renamed one.
+/// What a rename or move changed in the notes that link to the moved ones.
 pub struct LinkRewrite {
-    pub old_ref: String,
-    pub new_ref: String,
-    /// Whether links written with the note's title were updated too.
-    pub title_rules: bool,
+    /// The changes the notes were rewritten for, so open editors can apply them to unsaved edits.
+    pub renames: Vec<LinkRename>,
     pub notes: Vec<RewrittenNote>,
 }
 
@@ -1342,6 +1340,16 @@ pub fn rename_note(path: &str, new_title: &str, vault_path: &str) -> Result<Rena
         .to_string();
     let (mut meta, content) = frontmatter::parse_note(&raw, &filename);
     let old_title = meta.title.clone();
+    // The title field saves the new title before the file is renamed, so the title on disk can
+    // already be the new one. Links were written with the name the note had, which is its file name.
+    let link_title = if old_title == new_title {
+        Path::new(&filename)
+            .file_stem()
+            .map(|stem| stem.to_string_lossy().into_owned())
+            .unwrap_or_else(|| old_title.clone())
+    } else {
+        old_title.clone()
+    };
     let old_path_str = src.to_string_lossy().to_string();
 
     // Update frontmatter
@@ -1389,7 +1397,7 @@ pub fn rename_note(path: &str, new_title: &str, vault_path: &str) -> Result<Rena
         vault_path,
         &old_path_str,
         &new_path_str,
-        &old_title,
+        &link_title,
         new_title,
     );
 
@@ -1397,143 +1405,577 @@ pub fn rename_note(path: &str, new_title: &str, vault_path: &str) -> Result<Rena
         path: new_path_str,
         old_raw: raw,
         new_raw: updated,
-        old_title,
+        old_title: link_title,
         new_title: meta.title,
         links,
     })
 }
 
-/// Walk all .md files in the vault and update wikilink references after a note rename.
-/// Updates both HTML data-attributes (data-path, data-title) and raw [[old_title]] references.
-fn update_wikilinks_after_rename(
+/// One note whose name or folder changes, as links see it. Mirrored for open editors in
+/// `src/lib/editor/renamedLinks.ts`; both are checked against `tests/fixtures/renamed-links.json`.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct LinkRename {
+    /// Vault-relative path of the note without `.md`, before and after.
+    pub old_ref: String,
+    pub new_ref: String,
+    pub old_title: String,
+    pub new_title: String,
+    /// Links written with the title follow (the title changed and no other note has it).
+    pub title_rules: bool,
+    /// No other note has this file name, so a bare file name or top-level path means this note.
+    pub file_rules: bool,
+}
+
+/// The renamed or moved notes, looked up by their old path.
+pub(crate) struct LinkRenames {
+    list: Vec<LinkRename>,
+    by_old_ref: std::collections::HashMap<String, usize>,
+}
+
+impl LinkRenames {
+    pub(crate) fn new(list: Vec<LinkRename>) -> Self {
+        let by_old_ref = list
+            .iter()
+            .enumerate()
+            .map(|(index, rename)| (rename.old_ref.to_lowercase(), index))
+            .collect();
+        Self { list, by_old_ref }
+    }
+
+    fn by_path(&self, reference: &str) -> Option<&LinkRename> {
+        self.by_old_ref
+            .get(&reference.to_lowercase())
+            .map(|index| &self.list[*index])
+    }
+}
+
+fn split_ref(reference: &str) -> (&str, &str) {
+    reference.rsplit_once('/').unwrap_or(("", reference))
+}
+
+fn join_ref(dir: &str, name: &str) -> String {
+    if dir.is_empty() {
+        name.to_string()
+    } else {
+        format!("{dir}/{name}")
+    }
+}
+
+/// Resolve `.` and `..` in a slash path; `None` when it climbs out of the vault.
+fn normalize_link_dir(path: &str) -> Option<String> {
+    let mut parts: Vec<&str> = Vec::new();
+    for part in path.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                parts.pop()?;
+            }
+            _ => parts.push(part),
+        }
+    }
+    Some(parts.join("/"))
+}
+
+/// The `../`-style prefix that leads from folder `from` to folder `to`, ending in `/` unless empty.
+fn relative_link_dir(from: &str, to: &str) -> String {
+    let from: Vec<&str> = from.split('/').filter(|part| !part.is_empty()).collect();
+    let to: Vec<&str> = to.split('/').filter(|part| !part.is_empty()).collect();
+    let common = from.iter().zip(&to).take_while(|(a, b)| a == b).count();
+    let mut out = "../".repeat(from.len() - common);
+    for part in &to[common..] {
+        out.push_str(part);
+        out.push('/');
+    }
+    out
+}
+
+/// Characters a link destination without `<>` cannot hold as they are.
+fn encode_link_file_name(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    for c in name.chars() {
+        if matches!(c, '%' | ' ' | '\t' | '(' | ')' | '<' | '>' | '#') {
+            out.push_str(&format!("%{:02X}", c as u32));
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+fn encode_link_path(path: &str, angled: bool) -> String {
+    if angled {
+        return path.to_string();
+    }
+    path.split('/')
+        .map(encode_link_file_name)
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+fn decode_link(value: &str) -> String {
+    urlencoding::decode(value)
+        .map(|decoded| decoded.into_owned())
+        .unwrap_or_else(|_| value.to_string())
+}
+
+/// `name` without a trailing `.md` (any capitals), and that extension as written.
+fn split_md_ext(name: &str) -> (&str, &str) {
+    let at = name.len().saturating_sub(3);
+    if name.len() >= 3 && name.is_char_boundary(at) && name[at..].eq_ignore_ascii_case(".md") {
+        name.split_at(at)
+    } else {
+        (name, "")
+    }
+}
+
+/// The wiki link target and display after the renames, or `None` when the link is not affected.
+/// The target may carry a heading or block (`Note#Part`, `Note^id`) and a `.md` extension.
+fn renamed_wiki_link(
+    reference: &str,
+    display: Option<&str>,
+    renames: &LinkRenames,
+) -> Option<(String, Option<String>)> {
+    let anchor_at = reference.find(['#', '^']).unwrap_or(reference.len());
+    let (name, anchor) = reference.split_at(anchor_at);
+    let (base, ext) = split_md_ext(name);
+    let lower = base.to_lowercase();
+    let (rename, next) = if let Some(rename) = renames
+        .list
+        .iter()
+        .find(|rename| rename.title_rules && rename.old_title.to_lowercase() == lower)
+    {
+        (rename, rename.new_title.as_str())
+    } else {
+        let rename = renames.by_path(&base.replace('\\', "/"))?;
+        let stem_changes = split_ref(&rename.old_ref).1 != split_ref(&rename.new_ref).1;
+        // At the top of the vault the path is the bare name, as unsure as a title link.
+        if rename.old_ref == rename.new_ref
+            || !(rename.old_ref.contains('/') || (rename.file_rules && stem_changes))
+        {
+            return None;
+        }
+        (rename, rename.new_ref.as_str())
+    };
+    let follows_title =
+        display == Some(rename.old_title.as_str()) && rename.old_title != rename.new_title;
+    let display = if follows_title {
+        Some(rename.new_title.clone())
+    } else {
+        display.map(str::to_string)
+    };
+    Some((format!("{next}{ext}{anchor}"), display))
+}
+
+/// A link destination split into what the renames look at.
+struct LinkDestination<'a> {
+    angled: bool,
+    /// Path before any `#` part, still encoded.
+    path: &'a str,
+    anchor: &'a str,
+}
+
+fn link_destination(href: &str) -> Option<LinkDestination<'_>> {
+    let angled = href.len() >= 2 && href.starts_with('<') && href.ends_with('>');
+    let dest = if angled {
+        &href[1..href.len() - 1]
+    } else {
+        href
+    };
+    let has_scheme = dest.split_once(':').is_some_and(|(scheme, _)| {
+        scheme
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic())
+            && scheme
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '.' | '-'))
+    });
+    if has_scheme || dest.is_empty() || dest.starts_with('#') {
+        return None;
+    }
+    let (path, anchor) = dest.split_at(dest.find('#').unwrap_or(dest.len()));
+    Some(LinkDestination {
+        angled,
+        path,
+        anchor,
+    })
+}
+
+fn wrap_destination(angled: bool, path: String, anchor: &str) -> String {
+    if angled {
+        format!("<{path}{anchor}>")
+    } else {
+        format!("{path}{anchor}")
+    }
+}
+
+/// A Markdown link destination after the renames, or `None` when it does not point at a renamed
+/// note. `note_dir` is the vault-relative folder of the note holding the link. The link keeps its
+/// form: relative stays relative, from the vault root stays so, and a bare name stays bare when it
+/// still finds the note.
+fn renamed_href(href: &str, note_dir: &str, renames: &LinkRenames) -> Option<String> {
+    let LinkDestination {
+        angled,
+        path,
+        anchor,
+    } = link_destination(href)?;
+    let (raw_dir, raw_file) = match path.rfind('/') {
+        Some(slash) => (&path[..=slash], &path[slash + 1..]),
+        None => ("", path),
+    };
+    let (_, ext) = split_md_ext(raw_file);
+    if ext.is_empty() {
+        return None;
+    }
+    let file = decode_link(raw_file);
+    let stem = split_md_ext(&file).0;
+    let dir = decode_link(raw_dir).replace('\\', "/");
+    enum Form {
+        Bare,
+        Relative,
+        Root,
+    }
+    let found = if dir.is_empty() {
+        renames
+            .by_path(&join_ref(note_dir, stem))
+            .map(|rename| (rename, Form::Relative))
+            .or_else(|| {
+                // A bare name from another folder finds the note by its unique file name.
+                renames
+                    .list
+                    .iter()
+                    .find(|rename| {
+                        let (_, old_stem) = split_ref(&rename.old_ref);
+                        rename.file_rules
+                            && old_stem.to_lowercase() == stem.to_lowercase()
+                            && old_stem != split_ref(&rename.new_ref).1
+                    })
+                    .map(|rename| (rename, Form::Bare))
+            })
+    } else {
+        let relative = (!dir.starts_with('/'))
+            .then(|| normalize_link_dir(&format!("{note_dir}/{dir}")))
+            .flatten()
+            .and_then(|resolved| renames.by_path(&join_ref(&resolved, stem)))
+            .map(|rename| (rename, Form::Relative));
+        relative.or_else(|| {
+            normalize_link_dir(&dir)
+                .and_then(|resolved| renames.by_path(&join_ref(&resolved, stem)))
+                .map(|rename| (rename, Form::Root))
+        })
+    };
+    let (rename, form) = found?;
+    if rename.old_ref == rename.new_ref {
+        return None;
+    }
+    let (old_dir, _) = split_ref(&rename.old_ref);
+    let (new_dir, new_stem) = split_ref(&rename.new_ref);
+    let file = encode_link_path(&format!("{new_stem}{ext}"), angled);
+    let prefix = if old_dir.to_lowercase() == new_dir.to_lowercase() {
+        raw_dir.to_string()
+    } else {
+        match form {
+            Form::Bare => String::new(),
+            Form::Relative => encode_link_path(&relative_link_dir(note_dir, new_dir), angled),
+            Form::Root => {
+                let lead = if dir.starts_with('/') { "/" } else { "" };
+                let rest = if new_dir.is_empty() {
+                    String::new()
+                } else {
+                    format!("{}/", encode_link_path(new_dir, angled))
+                };
+                format!("{lead}{rest}")
+            }
+        }
+    };
+    Some(wrap_destination(angled, format!("{prefix}{file}"), anchor))
+}
+
+/// A relative link in a note that moved from `old_dir` to `new_dir`, pointed from the new folder at
+/// what it reached from the old one (which may have moved too). Links that did not reach an
+/// existing file, managed attachments and links from the vault root are left alone.
+fn relinked_href(
+    href: &str,
+    old_dir: &str,
+    new_dir: &str,
+    renames: &LinkRenames,
+    exists: &dyn Fn(&str) -> bool,
+) -> Option<String> {
+    let LinkDestination {
+        angled,
+        path,
+        anchor,
+    } = link_destination(href)?;
+    let decoded = decode_link(path).replace('\\', "/");
+    if decoded.starts_with('/')
+        || decoded
+            .trim_start_matches("./")
+            .trim_start_matches("../")
+            .starts_with(".helixnotes/")
+        || decoded.contains("/.helixnotes/")
+    {
+        return None;
+    }
+    // Written from the vault root, the link still works from the new folder.
+    if normalize_link_dir(&decoded).is_some_and(|root| exists(&root)) {
+        return None;
+    }
+    let target = normalize_link_dir(&format!("{old_dir}/{decoded}"))?;
+    let (base, ext) = split_md_ext(&target);
+    let target = match renames.by_path(base) {
+        Some(rename) if !ext.is_empty() => format!("{}{ext}", rename.new_ref),
+        _ => target.clone(),
+    };
+    if !exists(&target) {
+        return None;
+    }
+    let (target_dir, target_file) = split_ref(&target);
+    let next = format!(
+        "{}{}",
+        encode_link_path(&relative_link_dir(new_dir, target_dir), angled),
+        encode_link_path(target_file, angled)
+    );
+    let next = wrap_destination(angled, next, anchor);
+    (next != href).then_some(next)
+}
+
+/// Byte ranges of `text` outside fenced code blocks and inline code, where links are links.
+fn link_prose_ranges(text: &str) -> Vec<(usize, usize)> {
+    let mut ranges = Vec::new();
+    let mut fence: Option<(u8, usize)> = None;
+    let mut offset = 0;
+    for line in text.split_inclusive('\n') {
+        let start = offset;
+        offset += line.len();
+        let content = line.trim_end_matches(['\n', '\r']);
+        let trimmed = content.trim_start_matches(' ');
+        let opening = (content.len() - trimmed.len() <= 3)
+            .then(|| trimmed.as_bytes().first().copied())
+            .flatten()
+            .filter(|c| *c == b'`' || *c == b'~')
+            .map(|c| (c, trimmed.bytes().take_while(|b| *b == c).count()))
+            .filter(|(_, run)| *run >= 3);
+        if let Some((char, length)) = fence {
+            if let Some((c, run)) = opening {
+                if c == char && run >= length && trimmed[run..].trim().is_empty() {
+                    fence = None;
+                }
+            }
+            continue;
+        }
+        if let Some((c, run)) = opening {
+            if !(c == b'`' && trimmed[run..].contains('`')) {
+                fence = Some((c, run));
+                continue;
+            }
+        }
+        let bytes = line.as_bytes();
+        let mut from = start;
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i] != b'`' {
+                i += 1;
+                continue;
+            }
+            let run = bytes[i..].iter().take_while(|b| **b == b'`').count();
+            let mut j = i + run;
+            let mut close = None;
+            while j < bytes.len() {
+                if bytes[j] == b'`' {
+                    let other = bytes[j..].iter().take_while(|b| **b == b'`').count();
+                    if other == run {
+                        close = Some(j + other);
+                        break;
+                    }
+                    j += other;
+                } else {
+                    j += 1;
+                }
+            }
+            match close {
+                Some(end) => {
+                    ranges.push((from, start + i));
+                    from = start + end;
+                    i = end;
+                }
+                None => i += run,
+            }
+        }
+        ranges.push((from, offset));
+    }
+    ranges
+}
+
+fn wiki_link_pattern() -> &'static regex::Regex {
+    static PATTERN: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    PATTERN.get_or_init(|| regex::Regex::new(r"\[\[([^\[\]\n]+?)\]\]").unwrap())
+}
+
+fn markdown_link_pattern() -> &'static regex::Regex {
+    static PATTERN: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    PATTERN.get_or_init(|| {
+        regex::Regex::new(
+            r"\[([^\[\]\n]*)\]\((<[^<>\n]*>|(?:[^\s()<>]|\([^\s()<>]*\))+)([^)\n]*)\)",
+        )
+        .unwrap()
+    })
+}
+
+/// Where a note's own relative Markdown links are fixed after the note itself moved.
+pub(crate) struct MovedFrom<'a> {
+    pub old_dir: &'a str,
+    pub exists: &'a dyn Fn(&str) -> bool,
+}
+
+/// `text` with its links to renamed or moved notes brought in line. A note that moved itself
+/// passes `moved`, so its relative Markdown links are pointed from its new folder.
+pub(crate) fn rewrite_renamed_links(
+    text: &str,
+    renames: &LinkRenames,
+    note_dir: &str,
+    moved: Option<&MovedFrom>,
+) -> String {
+    let mut changes: Vec<(usize, usize, String)> = Vec::new();
+    for (from, to) in link_prose_ranges(text) {
+        let prose = &text[from..to];
+        for found in wiki_link_pattern().captures_iter(prose) {
+            let whole = found.get(0).unwrap();
+            let inner = &found[1];
+            // In a table cell the alias separator is written `\|`, since a bare `|` ends the cell.
+            let (reference, separator, display) = match inner.find('|') {
+                Some(bar) if bar > 0 && inner.as_bytes()[bar - 1] == b'\\' => {
+                    (&inner[..bar - 1], "\\|", Some(&inner[bar + 1..]))
+                }
+                Some(bar) => (&inner[..bar], "|", Some(&inner[bar + 1..])),
+                None => (inner, "|", None),
+            };
+            let Some((next, display)) = renamed_wiki_link(reference, display, renames) else {
+                continue;
+            };
+            let insert = match display {
+                Some(display) => format!("[[{next}{separator}{display}]]"),
+                None => format!("[[{next}]]"),
+            };
+            if insert != whole.as_str() {
+                changes.push((from + whole.start(), from + whole.end(), insert));
+            }
+        }
+        for found in markdown_link_pattern().captures_iter(prose) {
+            let whole = found.get(0).unwrap();
+            let (href, label) = match moved {
+                Some(moved) => (
+                    relinked_href(&found[2], moved.old_dir, note_dir, renames, moved.exists),
+                    &found[1],
+                ),
+                None => {
+                    let href = renamed_href(&found[2], note_dir, renames);
+                    // Link text that was the old title follows the new one.
+                    let label = renames
+                        .list
+                        .iter()
+                        .find(|rename| {
+                            rename.old_title == found[1] && rename.old_title != rename.new_title
+                        })
+                        .filter(|_| href.is_some())
+                        .map_or(&found[1], |rename| rename.new_title.as_str());
+                    (href, label)
+                }
+            };
+            let Some(href) = href else {
+                continue;
+            };
+            let insert = format!("[{label}]({href}{})", &found[3]);
+            if insert != whole.as_str() {
+                changes.push((from + whole.start(), from + whole.end(), insert));
+            }
+        }
+    }
+    if changes.is_empty() {
+        return text.to_string();
+    }
+    changes.sort_by_key(|change| change.0);
+    let mut result = String::with_capacity(text.len());
+    let mut at = 0;
+    for (start, end, insert) in changes {
+        if start < at {
+            continue;
+        }
+        result.push_str(&text[at..start]);
+        result.push_str(&insert);
+        at = end;
+    }
+    result.push_str(&text[at..]);
+    result
+}
+
+fn vault_notes(vault_path: &str) -> impl Iterator<Item = walkdir::DirEntry> {
+    let vault = Path::new(vault_path).to_path_buf();
+    let hn_dir = helixnotes_dir(vault_path);
+    WalkDir::new(vault.clone())
+        .into_iter()
+        .filter_entry(move |e| {
+            e.depth() == 0 || (!is_hidden(e.path()) && !e.path().starts_with(&hn_dir))
+        })
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            e.path().is_file() && e.path().extension().and_then(|ext| ext.to_str()) == Some("md")
+        })
+}
+
+/// Vault-relative path with forward slashes and without `.md`.
+fn vault_ref(vault_path: &str, path: &Path) -> String {
+    let rel = path
+        .strip_prefix(vault_path)
+        .map(|r| r.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| path.to_string_lossy().into_owned())
+        .replace('\\', "/");
+    split_md_ext(&rel).0.to_string()
+}
+
+/// How many notes in the vault have each file name, ignoring capitals.
+fn note_name_counts(vault_path: &str) -> std::collections::HashMap<String, usize> {
+    let mut counts = std::collections::HashMap::new();
+    for entry in vault_notes(vault_path) {
+        if let Some(stem) = entry.path().file_stem().and_then(|s| s.to_str()) {
+            *counts.entry(stem.to_lowercase()).or_insert(0) += 1;
+        }
+    }
+    counts
+}
+
+/// Rewrite the links in every note of the vault after notes were renamed or moved. `moved` lists
+/// notes that changed folder (new path, old vault-relative folder); their own relative links are
+/// fixed too. `skip` is left alone entirely. Code blocks and inline code are left as written.
+fn rewrite_links_in_vault(
     vault_path: &str,
-    old_path: &str,
-    new_path: &str,
-    old_title: &str,
-    new_title: &str,
+    renames: Vec<LinkRename>,
+    moved: &[(PathBuf, String)],
+    skip: Option<&str>,
 ) -> LinkRewrite {
     let vault = Path::new(vault_path);
-    let hn_dir = helixnotes_dir(vault_path);
-
-    // Vault-relative path ref (without .md), normalized to forward slashes so it
-    // matches [[folder/note]] wikilinks on Windows (OS paths use backslashes there).
-    let rel_ref = |p: &str| -> String {
-        let rel = Path::new(p)
-            .strip_prefix(vault)
-            .map(|r| r.to_string_lossy().into_owned())
-            .unwrap_or_else(|_| p.to_string())
-            .replace('\\', "/");
-        rel.strip_suffix(".md").unwrap_or(&rel).to_string()
-    };
-    let old_rel_ref = rel_ref(old_path);
-    let new_rel_ref = rel_ref(new_path);
-
-    // Check if another note with the same old_title exists in the vault.
-    // If so, title-based replacements (rules 1-3) are ambiguous and must be skipped,
-    // because we can't tell which [[Old Title]] ref points to the renamed note
-    // vs. the other note with the same title.
-    let title_is_unique = !WalkDir::new(vault)
-        .into_iter()
-        .filter_entry(|e| {
-            e.depth() == 0 || (!is_hidden(e.path()) && !e.path().starts_with(&hn_dir))
-        })
-        .filter_map(|e| e.ok())
-        .any(|e| {
-            let p = e.path();
-            if !p.is_file() || p.to_string_lossy().as_ref() == new_path {
-                return false;
-            }
-            if p.extension().and_then(|ext| ext.to_str()) != Some("md") {
-                return false;
-            }
-            // Check if this note's filename (without .md) matches the old title
-            p.file_stem()
-                .and_then(|s| s.to_str())
-                .map(|s| s.eq_ignore_ascii_case(old_title))
-                .unwrap_or(false)
-        });
-    let title_rules = old_title != new_title && title_is_unique;
+    let renames = LinkRenames::new(renames);
+    let exists = |rel: &str| vault.join(rel).is_file();
     let mut notes = Vec::new();
-
-    for entry in WalkDir::new(vault)
-        .into_iter()
-        .filter_entry(|e| {
-            e.depth() == 0 || (!is_hidden(e.path()) && !e.path().starts_with(&hn_dir))
-        })
-        .filter_map(|e| e.ok())
-    {
+    for entry in vault_notes(vault_path) {
         let path = entry.path();
-        if !path.is_file() {
-            continue;
-        }
         let path_str = path.to_string_lossy();
-        if path.extension().and_then(|e| e.to_str()) != Some("md") {
+        if skip == Some(path_str.as_ref()) {
             continue;
         }
-        // Skip the renamed note itself
-        if *path_str == *new_path {
-            continue;
-        }
-
         let content = match fs::read_to_string(path) {
             Ok(c) => c,
             Err(_) => continue,
         };
-
-        let mut result = content.clone();
-
-        // Notes are saved as markdown with [[ref]] or [[ref|display]] syntax.
-        // Update all wikilink forms that reference the renamed note:
-
-        // Title-based rules only apply when the old title is unique in the vault.
-        // If another note shares the same title, these would be ambiguous.
-        if title_rules {
-            // 1. Short title ref: [[Old Title]] → [[New Title]]
-            result = result.replace(&format!("[[{}]]", old_title), &format!("[[{}]]", new_title));
-
-            // 2. A link to the renamed note that displays its old title follows the new one:
-            //    [[Old Title|Old Title]] → [[New Title|New Title]]. Only links to this note: an
-            //    alias on a link to another note ([[Index|Old Title]]) is that note's wording.
-            //    In a table cell the separator is written `\|`, since a bare `|` ends the cell.
-            for bar in ["|", "\\|"] {
-                result = result.replace(
-                    &format!("[[{old_title}{bar}{old_title}]]"),
-                    &format!("[[{new_title}{bar}{new_title}]]"),
-                );
-
-                // 3. Short title with any other alias: [[Old Title|display]] → [[New Title|display]]
-                result = result.replace(
-                    &format!("[[{old_title}{bar}"),
-                    &format!("[[{new_title}{bar}"),
-                );
-            }
-        }
-
-        // Path-based rules are always safe (paths are unique).
-        if old_rel_ref != new_rel_ref {
-            // 4. Path-based ref: [[folder/Old Name]] → [[folder/New Name]]
-            result = result.replace(
-                &format!("[[{}]]", old_rel_ref),
-                &format!("[[{}]]", new_rel_ref),
-            );
-
-            // 5. Path-based ref with alias: [[folder/Old Name|display]] → [[folder/New Name|display]]
-            //    Also update the alias if it matches the old title.
-            //    e.g. [[folder/Old Name|Old Title]] → [[folder/New Name|New Title]]
-            for bar in ["|", "\\|"] {
-                if old_title != new_title {
-                    result = result.replace(
-                        &format!("[[{old_rel_ref}{bar}{old_title}]]"),
-                        &format!("[[{new_rel_ref}{bar}{new_title}]]"),
-                    );
-                }
-                // For aliases that DON'T match the old title, just update the ref part
-                result = result.replace(
-                    &format!("[[{old_rel_ref}{bar}"),
-                    &format!("[[{new_rel_ref}{bar}"),
-                );
-            }
-        }
+        let note_dir = split_ref(&vault_ref(vault_path, path)).0.to_string();
+        let moved_from =
+            moved
+                .iter()
+                .find(|(moved_path, _)| moved_path == path)
+                .map(|(_, old_dir)| MovedFrom {
+                    old_dir,
+                    exists: &exists,
+                });
+        let result = rewrite_renamed_links(&content, &renames, &note_dir, moved_from.as_ref());
 
         if result != content {
             // Replace the file in one step: a plain write truncates first, so a crash or a full
@@ -1545,34 +1987,117 @@ fn update_wikilinks_after_rename(
                     new_raw: result,
                 }),
                 Err(error) => log::error!(
-                    "Could not update links in {} after a rename: {error}",
+                    "Could not update links in {} after a rename or move: {error}",
                     path.display()
                 ),
             }
         }
     }
     LinkRewrite {
-        old_ref: old_rel_ref,
-        new_ref: new_rel_ref,
-        title_rules,
+        renames: renames.list,
         notes,
     }
 }
 
-pub fn rename_notebook(vault_path: &str, path: &str, new_name: &str) -> Result<String, String> {
+/// Update the links to a note after it was renamed in its folder: wiki links by title or path
+/// (with headings, blocks, any capitals or `.md`) and Markdown links to the file.
+fn update_wikilinks_after_rename(
+    vault_path: &str,
+    old_path: &str,
+    new_path: &str,
+    old_title: &str,
+    new_title: &str,
+) -> LinkRewrite {
+    let old_ref = vault_ref(vault_path, Path::new(old_path));
+    let new_ref = vault_ref(vault_path, Path::new(new_path));
+    let old_stem = split_ref(&old_ref).1.to_lowercase();
+    let new_stem = split_ref(&new_ref).1.to_lowercase();
+    // When another note has the old title or file name, links by title (or by bare file name)
+    // can't be told apart from links to that note, so they are left alone. Paths are unique.
+    let counts = note_name_counts(vault_path);
+    let others = |name: &str| {
+        let name = name.to_lowercase();
+        counts.get(&name).copied().unwrap_or(0) - usize::from(name == new_stem)
+    };
+    let rename = LinkRename {
+        title_rules: old_title != new_title && others(old_title) == 0,
+        file_rules: others(&old_stem) == 0,
+        old_ref,
+        new_ref,
+        old_title: old_title.to_string(),
+        new_title: new_title.to_string(),
+    };
+    rewrite_links_in_vault(vault_path, vec![rename], &[], Some(new_path))
+}
+
+/// Update links after notes changed folder: `moves` pairs each moved note's old path with its new
+/// one. Titles do not change, so only links written with a path follow.
+fn update_links_after_moves(vault_path: &str, moves: &[(PathBuf, PathBuf)]) -> LinkRewrite {
+    let counts = note_name_counts(vault_path);
+    let mut renames = Vec::new();
+    let mut moved = Vec::new();
+    for (old_path, new_path) in moves {
+        let old_ref = vault_ref(vault_path, old_path);
+        let new_ref = vault_ref(vault_path, new_path);
+        let stem = split_ref(&new_ref).1.to_lowercase();
+        let title = split_ref(&new_ref).1.to_string();
+        moved.push((new_path.clone(), split_ref(&old_ref).0.to_string()));
+        renames.push(LinkRename {
+            file_rules: counts.get(&stem).copied().unwrap_or(0) == 1,
+            old_ref,
+            new_ref,
+            old_title: title.clone(),
+            new_title: title,
+            title_rules: false,
+        });
+    }
+    rewrite_links_in_vault(vault_path, renames, &moved, None)
+}
+
+/// Every note under `new_dir` with the path it had under `old_dir`.
+fn notes_moved_with_notebook(old_dir: &Path, new_dir: &Path) -> Vec<(PathBuf, PathBuf)> {
+    WalkDir::new(new_dir)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            e.path().is_file() && e.path().extension().and_then(|ext| ext.to_str()) == Some("md")
+        })
+        .filter_map(|e| {
+            let suffix = e.path().strip_prefix(new_dir).ok()?;
+            Some((old_dir.join(suffix), e.path().to_path_buf()))
+        })
+        .collect()
+}
+
+pub fn rename_notebook(
+    vault_path: &str,
+    path: &str,
+    new_name: &str,
+) -> Result<(String, LinkRewrite), String> {
     let validated = ensure_notebook_path(vault_path, Path::new(path))?;
     let src = validated.as_path();
 
     let new_path = src.parent().unwrap().join(safe_child_name(new_name)?);
     if src == new_path {
-        return Ok(path.to_string());
+        return Ok((
+            path.to_string(),
+            LinkRewrite {
+                renames: Vec::new(),
+                notes: Vec::new(),
+            },
+        ));
     }
 
     move_notebook_with_icons(vault_path, src, &new_path)?;
-    Ok(new_path.to_string_lossy().to_string())
+    let links = update_links_after_moves(vault_path, &notes_moved_with_notebook(src, &new_path));
+    Ok((new_path.to_string_lossy().to_string(), links))
 }
 
-pub fn move_note(vault_path: &str, note_path: &str, dest_notebook: &str) -> Result<String, String> {
+pub fn move_note(
+    vault_path: &str,
+    note_path: &str,
+    dest_notebook: &str,
+) -> Result<(String, LinkRewrite), String> {
     let validated = ensure_note_path(vault_path, Path::new(note_path))?;
     let src = validated.as_path();
 
@@ -1586,14 +2111,22 @@ pub fn move_note(vault_path: &str, note_path: &str, dest_notebook: &str) -> Resu
     let dest = dest_dir.join(filename);
 
     move_note_with_quick_access(vault_path, src, &dest)?;
-    Ok(dest.to_string_lossy().to_string())
+    let links = if dest == src {
+        LinkRewrite {
+            renames: Vec::new(),
+            notes: Vec::new(),
+        }
+    } else {
+        update_links_after_moves(vault_path, &[(src.to_path_buf(), dest.clone())])
+    };
+    Ok((dest.to_string_lossy().to_string(), links))
 }
 
 pub fn move_notebook(
     vault_path: &str,
     notebook_path: &str,
     dest_parent: &str,
-) -> Result<String, String> {
+) -> Result<(String, LinkRewrite), String> {
     let validated = ensure_notebook_path(vault_path, Path::new(notebook_path))?;
     let src = validated.as_path();
 
@@ -1619,7 +2152,8 @@ pub fn move_notebook(
     // Destination reservation is performed atomically by move_notebook_with_icons.
 
     move_notebook_with_icons(vault_path, src, &dest)?;
-    Ok(dest.to_string_lossy().to_string())
+    let links = update_links_after_moves(vault_path, &notes_moved_with_notebook(src, &dest));
+    Ok((dest.to_string_lossy().to_string(), links))
 }
 
 /// Remove a directory inside trash if it's empty (after restoring/deleting its last note).
@@ -2637,6 +3171,202 @@ mod rename_link_tests {
         );
     }
 
+    // The same cases are checked against the editor's copy of these rules in renamedLinks.ts.
+    #[test]
+    fn shared_rename_cases_rewrite_links_like_the_editor() {
+        let fixtures: Vec<serde_json::Value> =
+            serde_json::from_str(include_str!("../../../tests/fixtures/renamed-links.json"))
+                .unwrap();
+        assert!(!fixtures.is_empty());
+        for fixture in fixtures {
+            let list = match fixture.get("renames") {
+                Some(list) => list.as_array().unwrap().clone(),
+                None => vec![fixture["rename"].clone()],
+            };
+            let rules = super::LinkRenames::new(
+                list.iter()
+                    .map(|rename| {
+                        let text = |key: &str| rename[key].as_str().unwrap().to_string();
+                        super::LinkRename {
+                            old_ref: text("old_ref"),
+                            new_ref: text("new_ref"),
+                            old_title: text("old_title"),
+                            new_title: text("new_title"),
+                            title_rules: rename["title_rules"].as_bool().unwrap(),
+                            file_rules: rename["file_rules"].as_bool().unwrap_or(false),
+                        }
+                    })
+                    .collect(),
+            );
+            assert_eq!(
+                super::rewrite_renamed_links(
+                    fixture["input"].as_str().unwrap(),
+                    &rules,
+                    fixture["note_dir"].as_str().unwrap(),
+                    None
+                ),
+                fixture["expected"].as_str().unwrap(),
+                "{}",
+                fixture["name"]
+            );
+        }
+    }
+
+    #[test]
+    fn moving_notes_and_notebooks_keeps_path_links_working() {
+        let vault = tempfile::tempdir().unwrap();
+        let root = vault.path();
+        let vault_path = root.to_str().unwrap();
+        for dir in ["Work", "Other", "Archive"] {
+            fs::create_dir_all(root.join(dir)).unwrap();
+        }
+        let write = |rel: &str, body: &str| fs::write(root.join(rel), body).unwrap();
+        let read = |rel: &str| fs::read_to_string(root.join(rel)).unwrap();
+        write(
+            "Work/Plan.md",
+            "# Plan\n[s](Sibling.md) [o](../Other/Linking.md#Top) ![](../.helixnotes/attachments/a.png) [w](https://example.com/x.md) [gone](Missing.md)\n",
+        );
+        write(
+            "Work/Sibling.md",
+            "# Sibling\n[p](Plan.md) [[Work/Plan]] [[Plan]]\n",
+        );
+        write(
+            "Other/Linking.md",
+            "# Linking\n[[Work/Plan#Goals|g]] [a](../Work/Plan.md) [b](Plan.md) [r](/Work/Plan.md) `[[Work/Plan]]`\n",
+        );
+
+        let (moved, links) = super::move_note(
+            vault_path,
+            root.join("Work/Plan.md").to_str().unwrap(),
+            root.join("Archive").to_str().unwrap(),
+        )
+        .unwrap();
+        assert!(moved.ends_with("Archive/Plan.md"));
+        assert_eq!(links.notes.len(), 3);
+        // The moved note's own relative links point from its new folder; the rest stays.
+        assert_eq!(
+            read("Archive/Plan.md"),
+            "# Plan\n[s](../Work/Sibling.md) [o](../Other/Linking.md#Top) ![](../.helixnotes/attachments/a.png) [w](https://example.com/x.md) [gone](Missing.md)\n"
+        );
+        // A bare name in the old folder becomes a path; title links still find the note.
+        assert_eq!(
+            read("Work/Sibling.md"),
+            "# Sibling\n[p](../Archive/Plan.md) [[Archive/Plan]] [[Plan]]\n"
+        );
+        assert_eq!(
+            read("Other/Linking.md"),
+            "# Linking\n[[Archive/Plan#Goals|g]] [a](../Archive/Plan.md) [b](Plan.md) [r](/Archive/Plan.md) `[[Work/Plan]]`\n"
+        );
+
+        let (renamed, links) =
+            super::rename_notebook(vault_path, root.join("Work").to_str().unwrap(), "Projects")
+                .unwrap();
+        assert!(renamed.ends_with("Projects"));
+        assert_eq!(links.renames.len(), 1);
+        assert_eq!(
+            read("Archive/Plan.md"),
+            "# Plan\n[s](../Projects/Sibling.md) [o](../Other/Linking.md#Top) ![](../.helixnotes/attachments/a.png) [w](https://example.com/x.md) [gone](Missing.md)\n"
+        );
+        // Links between notes that moved together still work as they are.
+        assert_eq!(
+            read("Projects/Sibling.md"),
+            "# Sibling\n[p](../Archive/Plan.md) [[Archive/Plan]] [[Plan]]\n"
+        );
+
+        fs::create_dir_all(root.join("Group")).unwrap();
+        write(
+            "Other/Index.md",
+            "[[Projects/Sibling]] [s](../Projects/Sibling.md)\n",
+        );
+        super::move_notebook(
+            vault_path,
+            root.join("Projects").to_str().unwrap(),
+            root.join("Group").to_str().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            read("Other/Index.md"),
+            "[[Group/Projects/Sibling]] [s](../Group/Projects/Sibling.md)\n"
+        );
+        assert_eq!(
+            read("Group/Projects/Sibling.md"),
+            "# Sibling\n[p](../../Archive/Plan.md) [[Archive/Plan]] [[Plan]]\n"
+        );
+    }
+
+    // Renaming through the title field saves the new title first and renames the file after.
+    #[test]
+    fn a_rename_after_the_title_was_saved_still_updates_links_by_the_old_name() {
+        let vault = tempfile::tempdir().unwrap();
+        let root = vault.path();
+        let old_path = root.join("Old Plan.md");
+        fs::write(&old_path, "---\ntitle: New Plan\n---\n# New Plan\n").unwrap();
+        let linking = root.join("Linking.md");
+        fs::write(
+            &linking,
+            "[[Old Plan]] [[Old Plan#Goals|Old Plan]] [a](Old%20Plan.md)\n",
+        )
+        .unwrap();
+        let renamed = super::rename_note(
+            old_path.to_str().unwrap(),
+            "New Plan",
+            root.to_str().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(renamed.old_title, "Old Plan");
+        assert_eq!(
+            fs::read_to_string(&linking).unwrap(),
+            "[[New Plan]] [[New Plan#Goals|New Plan]] [a](New%20Plan.md)\n"
+        );
+    }
+
+    #[test]
+    fn a_rename_reaches_links_in_other_folders_and_leaves_lookalikes() {
+        let vault = tempfile::tempdir().unwrap();
+        let root = vault.path();
+        fs::create_dir_all(root.join("Work")).unwrap();
+        fs::create_dir_all(root.join("Other")).unwrap();
+        let old_path = root.join("Work/Old Plan.md");
+        fs::write(&old_path, "---\ntitle: Old Plan\n---\n# Old Plan\n").unwrap();
+        let linking = root.join("Other/Linking.md");
+        fs::write(
+            &linking,
+            "[[Old Plan#Goals]] [[old plan]] [a](../Work/Old%20Plan.md) [b](Old%20Plan.md)\n`[[Old Plan]]`\n",
+        )
+        .unwrap();
+        let renamed = super::rename_note(
+            old_path.to_str().unwrap(),
+            "New Plan",
+            root.to_str().unwrap(),
+        )
+        .unwrap();
+        assert!(renamed.links.renames[0].title_rules && renamed.links.renames[0].file_rules);
+        assert_eq!(
+            fs::read_to_string(&linking).unwrap(),
+            "[[New Plan#Goals]] [[New Plan]] [a](../Work/New%20Plan.md) [b](New%20Plan.md)\n`[[Old Plan]]`\n"
+        );
+
+        // Another note with the same name elsewhere: only links with a path follow.
+        fs::write(root.join("Other/Plan B.md"), "# Plan B\n").unwrap();
+        fs::write(root.join("Plan B.md"), "# Plan B\n").unwrap();
+        fs::write(
+            &linking,
+            "[[Plan B]] [a](Plan%20B.md) [b](../Plan%20B.md)\n",
+        )
+        .unwrap();
+        let renamed = super::rename_note(
+            root.join("Plan B.md").to_str().unwrap(),
+            "Plan C",
+            root.to_str().unwrap(),
+        )
+        .unwrap();
+        assert!(!renamed.links.renames[0].title_rules && !renamed.links.renames[0].file_rules);
+        assert_eq!(
+            fs::read_to_string(&linking).unwrap(),
+            "[[Plan B]] [a](Plan%20B.md) [b](../Plan%20C.md)\n"
+        );
+    }
+
     #[test]
     fn a_rename_updates_links_to_the_note_and_leaves_other_aliases_alone() {
         let vault = tempfile::tempdir().unwrap();
@@ -2669,9 +3399,12 @@ mod rename_link_tests {
             rewrite.notes[0].new_raw,
             fs::read_to_string(&linking).unwrap()
         );
-        assert!(rewrite.title_rules);
+        assert!(rewrite.renames[0].title_rules);
         assert_eq!(
-            (rewrite.old_ref.as_str(), rewrite.new_ref.as_str()),
+            (
+                rewrite.renames[0].old_ref.as_str(),
+                rewrite.renames[0].new_ref.as_str()
+            ),
             ("Home", "Start")
         );
 
@@ -3598,7 +4331,8 @@ mod tests {
             &renamed.path,
             root.join("Archive").to_str().unwrap(),
         )
-        .unwrap();
+        .unwrap()
+        .0;
         assert_eq!(
             super::load_quick_access(vault_path).unwrap()[0],
             "Archive/Second.md"
@@ -3620,7 +4354,8 @@ mod tests {
             root.join("Archive").to_str().unwrap(),
             "Journal",
         )
-        .unwrap();
+        .unwrap()
+        .0;
         assert_eq!(
             super::load_quick_access(vault_path).unwrap(),
             [

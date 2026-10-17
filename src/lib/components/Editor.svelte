@@ -69,7 +69,7 @@
 	import { externalNoteReferences } from '$lib/editor/externalNote';
 	import { tagIterationKey } from '$lib/utils/tag-styles';
 	import { replaceWithWikiLink } from '$lib/editor/wikiLinks';
-	import { renamedLink, renamedLinkChanges, type LinkRename } from '$lib/editor/renamedLinks';
+	import { renamedHref, renamedLink, renamedLinkChanges, type LinkRename } from '$lib/editor/renamedLinks';
 	import { assetSourceToMarkdown, assetUrlToLocalPath, encodeMarkdownPath, resolveFileReference, noteAssetRoot, isTrashedNote } from '$lib/utils/paths';
 	import GraphView from './GraphView.svelte';
 	import TagSuggestInput from './TagSuggestInput.svelte';
@@ -7380,35 +7380,42 @@
 		else unlistenPathMoved = fn;
 	}).catch(error => console.error('Failed to listen for relocated notes:', error));
 
-	/** Bring the wiki links of the open note in line with a rename of the note they point to. */
-	function applyRenamedLinks(rename: LinkRename) {
+	/** Bring the links of the open note in line with renamed or moved notes they point to. */
+	function applyRenamedLinks(renames: LinkRename[], noteDir: string) {
 		if ($sourceMode) {
 			const view = source.view;
 			if (!view) return;
-			const changes = renamedLinkChanges(view.state.doc.toString(), rename);
+			const changes = renamedLinkChanges(view.state.doc.toString(), renames, noteDir);
 			if (changes.length) view.dispatch({ changes });
 			return;
 		}
 		if (!editor) return;
 		const { schema, doc } = editor.state;
 		const wikiLink = schema.marks.wikiLink;
+		const link = schema.marks.link;
 		const edits: { from: number; to: number; node: any }[] = [];
 		doc.descendants((node: any, pos: number) => {
 			if (!node.isText) return;
 			const text = node.text as string;
 			const mark = wikiLink ? node.marks.find((m: any) => m.type === wikiLink) : null;
-			if (mark) {
+			const linkMark = link ? node.marks.find((m: any) => m.type === link) : null;
+			const href = linkMark ? renamedHref(String(linkMark.attrs.href ?? ''), noteDir, renames) : null;
+			if (linkMark && href !== null) {
+				const marks = node.marks.map((m: any) => m === linkMark ? link.create({ ...linkMark.attrs, href }) : m);
+				const titled = renames.find((rename) => rename.old_title === text && rename.old_title !== rename.new_title);
+				edits.push({ from: pos, to: pos + node.nodeSize, node: schema.text(titled ? titled.new_title : text, marks) });
+			} else if (mark) {
 				const ref = (mark.attrs.title as string | null) || text;
-				const next = renamedLink(ref, ref === text ? null : text, rename);
+				const next = renamedLink(ref, ref === text ? null : text, renames);
 				if (!next) return;
-				const path = String(mark.attrs.path ?? '').replace(/\\/g, '/');
-				const attrs = { ...mark.attrs, title: next.ref,
-					path: path === `${rename.old_ref}.md` ? `${rename.new_ref}.md` : mark.attrs.path };
+				const path = String(mark.attrs.path ?? '').replace(/\\/g, '/').toLowerCase();
+				const moved = renames.find((rename) => `${rename.old_ref}.md`.toLowerCase() === path);
+				const attrs = { ...mark.attrs, title: next.ref, path: moved ? `${moved.new_ref}.md` : mark.attrs.path };
 				const marks = node.marks.map((m: any) => m === mark ? wikiLink.create(attrs) : m);
 				edits.push({ from: pos, to: pos + node.nodeSize, node: schema.text(next.display ?? next.ref, marks) });
 			} else if (!wikiLink && !node.marks.some((m: any) => m.type.name === 'code')) {
 				// With wiki links switched off they are ordinary text in the note.
-				for (const change of renamedLinkChanges(text, rename)) {
+				for (const change of renamedLinkChanges(text, renames, noteDir)) {
 					edits.push({ from: pos + change.from, to: pos + change.to, node: schema.text(change.insert, node.marks) });
 				}
 			}
@@ -7419,7 +7426,7 @@
 		editor.view.dispatch(tr);
 	}
 
-	type LinksRewrittenEvent = LinkRename & { vault_path: string; path: string; old_raw: string; new_raw: string };
+	type LinksRewrittenEvent = { vault_path: string; path: string; old_raw: string; new_raw: string; renames: LinkRename[] };
 	let unlistenLinksRewritten: (() => void) | null = null;
 	listen<LinksRewrittenEvent>('vault-links-rewritten', ({ payload }) => {
 		if (editorDisposed || payload.vault_path !== $appConfig?.active_vault
@@ -7436,7 +7443,10 @@
 				if (saves.raw !== payload.new_raw) flagExternalConflict();
 				return;
 			}
-			applyRenamedLinks(payload);
+			const vault = payload.vault_path.replace(/\\/g, '/');
+			const notePath = payload.path.replace(/\\/g, '/');
+			const relative = notePath.startsWith(`${vault}/`) ? notePath.slice(vault.length + 1) : notePath;
+			applyRenamedLinks(payload.renames, relative.includes('/') ? relative.slice(0, relative.lastIndexOf('/')) : '');
 		})();
 	}).then(fn => {
 		if (editorDisposed) fn();

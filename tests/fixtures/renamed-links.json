@@ -1,0 +1,230 @@
+[
+  {
+    "name": "title links, aliases and links to other notes",
+    "rename": {
+      "old_ref": "Home",
+      "new_ref": "Start",
+      "old_title": "Home",
+      "new_title": "Start",
+      "title_rules": true,
+      "file_rules": true
+    },
+    "note_dir": "",
+    "input": "See [[Home]], [[Home|the start page]] and [[Home|Home]].\nAlso [[Index|Home]] and [[Notes/Home|Home]].\n",
+    "expected": "See [[Start]], [[Start|the start page]] and [[Start|Start]].\nAlso [[Index|Home]] and [[Notes/Home|Home]].\n"
+  },
+  {
+    "name": "headings, blocks, other capitals, the .md extension and embeds",
+    "rename": {
+      "old_ref": "Home",
+      "new_ref": "Start",
+      "old_title": "Home",
+      "new_title": "Start",
+      "title_rules": true,
+      "file_rules": true
+    },
+    "note_dir": "",
+    "input": "[[Home#Section]] [[Home^abc123]] [[Home#Section|Home]] [[home]] [[HOME|x]] [[Home.md]] [[Home.md#Part]] ![[Home]] ![[Home#Part|300]] [[Homepage]] [[Home Office]]\n",
+    "expected": "[[Start#Section]] [[Start^abc123]] [[Start#Section|Start]] [[Start]] [[Start|x]] [[Start.md]] [[Start.md#Part]] ![[Start]] ![[Start#Part|300]] [[Homepage]] [[Home Office]]\n"
+  },
+  {
+    "name": "aliased links in a table cell",
+    "rename": {
+      "old_ref": "Home",
+      "new_ref": "Start",
+      "old_title": "Home",
+      "new_title": "Start",
+      "title_rules": true,
+      "file_rules": true
+    },
+    "note_dir": "",
+    "input": "| [[Home\\|Home]] | [[Home\\|start]] and [[Index\\|Home]] | [[Home#A\\|Home]] |\n",
+    "expected": "| [[Start\\|Start]] | [[Start\\|start]] and [[Index\\|Home]] | [[Start#A\\|Start]] |\n"
+  },
+  {
+    "name": "links in code stay as written",
+    "rename": {
+      "old_ref": "Home",
+      "new_ref": "Start",
+      "old_title": "Home",
+      "new_title": "Start",
+      "title_rules": true,
+      "file_rules": true
+    },
+    "note_dir": "",
+    "input": "Inline `[[Home]]` and ``a ` [[Home]]`` but [[Home]].\n```\n[[Home]] [x](Home.md)\n```\n~~~~md\n[[Home]]\n~~~\n~~~~\nAfter [[Home]] and `unclosed [[Home]]\n",
+    "expected": "Inline `[[Home]]` and ``a ` [[Home]]`` but [[Start]].\n```\n[[Home]] [x](Home.md)\n```\n~~~~md\n[[Home]]\n~~~\n~~~~\nAfter [[Start]] and `unclosed [[Start]]\n"
+  },
+  {
+    "name": "Markdown links in the same folder",
+    "rename": {
+      "old_ref": "Home",
+      "new_ref": "Start",
+      "old_title": "Home",
+      "new_title": "Start",
+      "title_rules": true,
+      "file_rules": true
+    },
+    "note_dir": "",
+    "input": "[Home](Home.md) [x](Home.md#Part \"title\") [x](./Home.md) [x](<Home.md>) [x](home.md) ![x](Home.md)\nUntouched: [x](https://example.com/Home.md) [x](Other.md) [x](Home) [x](#Home) [Home](Index.md)\n",
+    "expected": "[Start](Start.md) [x](Start.md#Part \"title\") [x](./Start.md) [x](<Start.md>) [x](Start.md) ![x](Start.md)\nUntouched: [x](https://example.com/Home.md) [x](Other.md) [x](Home) [x](#Home) [Home](Index.md)\n"
+  },
+  {
+    "name": "a note in a folder, linked from that folder",
+    "rename": {
+      "old_ref": "Work/Old Plan",
+      "new_ref": "Work/New Plan",
+      "old_title": "Old Plan",
+      "new_title": "New Plan",
+      "title_rules": true,
+      "file_rules": true
+    },
+    "note_dir": "Work",
+    "input": "[a](Old%20Plan.md) [a](<Old Plan.md>) [[Old Plan]] [[Work/Old Plan#Goals|g]] [[Work\\Old Plan]]\n",
+    "expected": "[a](New%20Plan.md) [a](<New Plan.md>) [[New Plan]] [[Work/New Plan#Goals|g]] [[Work/New Plan]]\n"
+  },
+  {
+    "name": "a note in a folder, linked from another folder",
+    "rename": {
+      "old_ref": "Work/Old Plan",
+      "new_ref": "Work/New Plan",
+      "old_title": "Old Plan",
+      "new_title": "New Plan",
+      "title_rules": true,
+      "file_rules": true
+    },
+    "note_dir": "Other/Deep",
+    "input": "[a](../../Work/Old%20Plan.md#Goals) [a](Work/Old%20Plan.md) [a](/Work/Old%20Plan.md) [a](Old%20Plan.md) [a](Elsewhere/Old%20Plan.md) [a](../Old%20Plan.md)\n",
+    "expected": "[a](../../Work/New%20Plan.md#Goals) [a](Work/New%20Plan.md) [a](/Work/New%20Plan.md) [a](New%20Plan.md) [a](Elsewhere/Old%20Plan.md) [a](../Old%20Plan.md)\n"
+  },
+  {
+    "name": "another note has the same name: only path links follow",
+    "rename": {
+      "old_ref": "Work/Old Plan",
+      "new_ref": "Work/New Plan",
+      "old_title": "Old Plan",
+      "new_title": "New Plan",
+      "title_rules": false,
+      "file_rules": false
+    },
+    "note_dir": "Other",
+    "input": "[[Old Plan]] [[Old Plan|x]] [[Work/Old Plan|Old Plan]] [a](Old%20Plan.md) [a](../Work/Old%20Plan.md)\n",
+    "expected": "[[Old Plan]] [[Old Plan|x]] [[Work/New Plan|New Plan]] [a](Old%20Plan.md) [a](../Work/New%20Plan.md)\n"
+  },
+  {
+    "name": "new names with characters a link destination has to encode",
+    "rename": {
+      "old_ref": "Plan",
+      "new_ref": "Plan (v2) #1",
+      "old_title": "Plan",
+      "new_title": "Plan (v2) #1",
+      "title_rules": true,
+      "file_rules": true
+    },
+    "note_dir": "",
+    "input": "[a](Plan.md) [a](<Plan.md>) [[Plan]]\n",
+    "expected": "[a](Plan%20%28v2%29%20%231.md) [a](<Plan (v2) #1.md>) [[Plan (v2) #1]]\n"
+  },
+  {
+    "name": "a note at the top of the vault whose name another note shares",
+    "rename": {
+      "old_ref": "Plan B",
+      "new_ref": "Plan C",
+      "old_title": "Plan B",
+      "new_title": "Plan C",
+      "title_rules": false,
+      "file_rules": false
+    },
+    "note_dir": "Other",
+    "input": "[[Plan B]] [[Plan B|x]] [[Plan B#Part]] [a](Plan%20B.md) [b](../Plan%20B.md)\n",
+    "expected": "[[Plan B]] [[Plan B|x]] [[Plan B#Part]] [a](Plan%20B.md) [b](../Plan%20C.md)\n"
+  },
+  {
+    "name": "a note moved to another folder, linked from its old folder",
+    "renames": [
+      {
+        "old_ref": "Work/Plan",
+        "new_ref": "Archive/Plan",
+        "old_title": "Plan",
+        "new_title": "Plan",
+        "title_rules": false,
+        "file_rules": true
+      }
+    ],
+    "note_dir": "Work",
+    "input": "[p](Plan.md) [[Work/Plan]] [[Plan]] [q](./Plan.md#Goals)\n",
+    "expected": "[p](../Archive/Plan.md) [[Archive/Plan]] [[Plan]] [q](../Archive/Plan.md#Goals)\n"
+  },
+  {
+    "name": "a note moved to another folder, linked from elsewhere",
+    "renames": [
+      {
+        "old_ref": "Work/Plan",
+        "new_ref": "Archive/Plan",
+        "old_title": "Plan",
+        "new_title": "Plan",
+        "title_rules": false,
+        "file_rules": true
+      }
+    ],
+    "note_dir": "Other",
+    "input": "[[Work/Plan#Goals|g]] [a](../Work/Plan.md) [b](Plan.md) [r](/Work/Plan.md) [c](<../Work/Plan.md>) [d](Work/Plan.md)\n",
+    "expected": "[[Archive/Plan#Goals|g]] [a](../Archive/Plan.md) [b](Plan.md) [r](/Archive/Plan.md) [c](<../Archive/Plan.md>) [d](Archive/Plan.md)\n"
+  },
+  {
+    "name": "a renamed notebook moves every note in it",
+    "renames": [
+      {
+        "old_ref": "Work/A",
+        "new_ref": "Projects/A",
+        "old_title": "A",
+        "new_title": "A",
+        "title_rules": false,
+        "file_rules": true
+      },
+      {
+        "old_ref": "Work/Sub/B",
+        "new_ref": "Projects/Sub/B",
+        "old_title": "B",
+        "new_title": "B",
+        "title_rules": false,
+        "file_rules": true
+      }
+    ],
+    "note_dir": "Other",
+    "input": "[[Work/A]] [[Work/Sub/B|b]] [x](../Work/Sub/B.md) [y](../Work/Other.md) [[A]]\n",
+    "expected": "[[Projects/A]] [[Projects/Sub/B|b]] [x](../Projects/Sub/B.md) [y](../Work/Other.md) [[A]]\n"
+  },
+  {
+    "name": "a note moved from the top of the vault into a folder",
+    "renames": [
+      {
+        "old_ref": "Plan",
+        "new_ref": "My Folder/Plan",
+        "old_title": "Plan",
+        "new_title": "Plan",
+        "title_rules": false,
+        "file_rules": true
+      }
+    ],
+    "note_dir": "",
+    "input": "[[Plan]] [a](Plan.md) [b](<Plan.md>)\n",
+    "expected": "[[Plan]] [a](My%20Folder/Plan.md) [b](<My Folder/Plan.md>)\n"
+  },
+  {
+    "name": "a note moved to the top of the vault",
+    "renames": [
+      {
+        "old_ref": "Work/Plan",
+        "new_ref": "Plan",
+        "old_title": "Plan",
+        "new_title": "Plan",
+        "title_rules": false,
+        "file_rules": true
+      }
+    ],
+    "note_dir": "Other",
+    "input": "[[Work/Plan]] [a](../Work/Plan.md) [b](/Work/Plan.md)\n",
+    "expected": "[[Plan]] [a](../Plan.md) [b](/Plan.md)\n"
+  }
+]

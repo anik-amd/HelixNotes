@@ -49,3 +49,15 @@ test('aliased links in a table cell follow a rename', () => {
     '| [[Start\\|Start]] | [[Start\\|start]] and [[Index\\|Home]] |'
   );
 });
+
+// The same cases are checked against the backend rewrite in operations.rs.
+const fixtures = JSON.parse(await readFile(new URL('./fixtures/renamed-links.json', import.meta.url), 'utf8'));
+for (const fixture of fixtures) {
+  test(`shared rename case: ${fixture.name}`, () => {
+    let result = fixture.input;
+    for (const change of renamedLinkChanges(fixture.input, fixture.renames ?? fixture.rename, fixture.note_dir).reverse()) {
+      result = result.slice(0, change.from) + change.insert + result.slice(change.to);
+    }
+    assert.equal(result, fixture.expected);
+  });
+}

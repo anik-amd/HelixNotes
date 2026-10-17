@@ -72,11 +72,7 @@ struct LinksRewrittenEvent<'a> {
     path: &'a str,
     old_raw: &'a str,
     new_raw: &'a str,
-    old_ref: &'a str,
-    new_ref: &'a str,
-    old_title: &'a str,
-    new_title: &'a str,
-    title_rules: bool,
+    renames: &'a [operations::LinkRename],
 }
 
 // A rename also rewrites the notes that link to the renamed one. Keep their previous state in
@@ -85,10 +81,10 @@ struct LinksRewrittenEvent<'a> {
 fn announce_rewritten_links<R: Runtime>(
     app: &AppHandle<R>,
     vault: &str,
-    renamed: &operations::RenamedNote,
+    links: &operations::LinkRewrite,
     max_versions: u32,
 ) {
-    for note in &renamed.links.notes {
+    for note in &links.notes {
         let filename = Path::new(&note.path)
             .file_name()
             .unwrap_or_default()
@@ -104,11 +100,7 @@ fn announce_rewritten_links<R: Runtime>(
                 path: &note.path,
                 old_raw: &note.old_raw,
                 new_raw: &note.new_raw,
-                old_ref: &renamed.links.old_ref,
-                new_ref: &renamed.links.new_ref,
-                old_title: &renamed.old_title,
-                new_title: &renamed.new_title,
-                title_rules: renamed.links.title_rules,
+                renames: &links.renames,
             },
         ) {
             log::error!("Could not notify note windows about updated links: {error}");
@@ -770,9 +762,15 @@ pub async fn rename_notebook<R: Runtime>(
     new_name: String,
 ) -> Result<String, String> {
     let search = state.vault_snapshot(&vault_path)?;
+    let max_versions = state
+        .config
+        .lock()
+        .map_err(|error| error.to_string())?
+        .max_versions_per_note;
     let _write_guard = state.note_save.lock().await;
-    let renamed = operations::rename_notebook(&vault_path, &path, &new_name)?;
+    let (renamed, links) = operations::rename_notebook(&vault_path, &path, &new_name)?;
     emit_path_move(&app, &vault_path, &path, &renamed, None);
+    announce_rewritten_links(&app, &vault_path, &links, max_versions);
     if let Some(search) = search {
         if let Err(error) = search.queue_vault_refresh(&vault_path) {
             log::error!("Failed to queue renamed notebook search refresh: {error}");
@@ -790,11 +788,18 @@ pub async fn move_notebook<R: Runtime>(
     dest_parent: String,
 ) -> Result<String, String> {
     let search = state.vault_snapshot(&vault_path)?;
+    let max_versions = state
+        .config
+        .lock()
+        .map_err(|error| error.to_string())?
+        .max_versions_per_note;
     let _write_guard = state.note_save.lock().await;
     let vault_path = vault_path.as_str();
 
-    let new_full_path = operations::move_notebook(vault_path, &notebook_path, &dest_parent)?;
+    let (new_full_path, links) =
+        operations::move_notebook(vault_path, &notebook_path, &dest_parent)?;
     emit_path_move(&app, vault_path, &notebook_path, &new_full_path, None);
+    announce_rewritten_links(&app, vault_path, &links, max_versions);
 
     // Reconcile renamed paths without blocking the move on a full rebuild.
     if let Some(search) = search {
@@ -1016,7 +1021,7 @@ pub async fn rename_note<R: Runtime>(
     let _write_guard = state.note_save.lock().await;
     let renamed = operations::rename_note(&path, &new_title, &vault_path)?;
     emit_path_move(&app, &vault_path, &path, &renamed.path, Some(&renamed));
-    announce_rewritten_links(&app, &vault_path, &renamed, max_versions);
+    announce_rewritten_links(&app, &vault_path, &renamed.links, max_versions);
     if let Some(search) = search {
         if let Err(error) = search.queue_vault_refresh(&vault_path) {
             log::error!("Failed to queue renamed note search refresh: {error}");
@@ -1050,14 +1055,23 @@ pub async fn move_note<R: Runtime>(
     dest_notebook: String,
 ) -> Result<String, String> {
     let search = state.vault_snapshot(&vault_path)?;
+    let max_versions = state
+        .config
+        .lock()
+        .map_err(|error| error.to_string())?
+        .max_versions_per_note;
     let _write_guard = state.note_save.lock().await;
     let vault_path = vault_path.as_str();
 
-    let new_full_path = operations::move_note(vault_path, &note_path, &dest_notebook)?;
+    let (new_full_path, links) = operations::move_note(vault_path, &note_path, &dest_notebook)?;
     emit_path_move(&app, vault_path, &note_path, &new_full_path, None);
+    announce_rewritten_links(&app, vault_path, &links, max_versions);
 
     index_note_bg(search.clone(), &note_path);
-    index_note_bg(search, &new_full_path);
+    index_note_bg(search.clone(), &new_full_path);
+    for note in &links.notes {
+        index_note_bg(search.clone(), &note.path);
+    }
 
     Ok(new_full_path)
 }
