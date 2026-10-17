@@ -28,7 +28,7 @@
 	import { Extension, Node as TiptapNode, Mark as TiptapMark, mergeAttributes } from '@tiptap/core';
 	import { Plugin, PluginKey, EditorState, Selection, TextSelection } from '@tiptap/pm/state';
 	import { Decoration, DecorationSet } from '@tiptap/pm/view';
-	import { DOMParser as PMDOMParser, DOMSerializer, type Node as ProseMirrorNode } from '@tiptap/pm/model';
+	import { DOMParser as PMDOMParser, DOMSerializer, Slice, type Node as ProseMirrorNode } from '@tiptap/pm/model';
 	import { convertFileSrc } from '@tauri-apps/api/core';
 	import { getCurrentWindow } from '@tauri-apps/api/window';
 	import { readFile } from '@tauri-apps/plugin-fs';
@@ -71,6 +71,7 @@
 	import { replaceWithWikiLink } from '$lib/editor/wikiLinks';
 	import { renamedHref, renamedLink, renamedLinkChanges, type LinkRename } from '$lib/editor/renamedLinks';
 	import { countWords, markdownCountText } from '$lib/utils/word-count';
+	import { htmlHasFormatting, looksLikeMarkdown } from '$lib/utils/markdown-paste';
 	import { assetSourceToMarkdown, assetUrlToLocalPath, encodeMarkdownPath, resolveFileReference, noteAssetRoot, isTrashedNote } from '$lib/utils/paths';
 	import GraphView from './GraphView.svelte';
 	import TagSuggestInput from './TagSuggestInput.svelte';
@@ -5351,8 +5352,8 @@
 	}
 
 
-	function markdownToHtml(md: string, snapshot = false): string {
-		const src = snapshot ? md : stripTitleH1(md);
+	function markdownToHtml(md: string, snapshot = false, pasted = false): string {
+		const src = snapshot || pasted ? md : stripTitleH1(md);
 		// Render once; parser rules keep code and math payloads out of prose transformations.
 		let html = mdit.render(src, {
 			wikiLinkTitles: $appConfig?.enable_wiki_links ? wikiLinkTitlesCache : undefined,
@@ -7088,7 +7089,32 @@
 			insertClipboardImage();
 			return true;
 		}
-		return false;
+		return pasteMarkdown(event, hasText, html);
+	}
+
+	/**
+	 * Pasted text written in Markdown is rendered the way a note is, then goes through the normal
+	 * HTML paste. Not inside code, not for Ctrl+Shift+V (paste as plain text), and not when the
+	 * clipboard HTML has formatting of its own; styled text from a code editor or terminal does not.
+	 */
+	function pasteMarkdown(event: ClipboardEvent, text: string, html: string): boolean {
+		const view = editor?.view;
+		if (!view || !looksLikeMarkdown(text) || (html && htmlHasFormatting(html))) return false;
+		if (view.state.selection.$from.parent.type.spec.code || (view as any).input?.shiftKey) return false;
+		event.preventDefault();
+		// Parsed from an inert document, so images in it are not fetched before they are resolved.
+		const rendered = new window.DOMParser().parseFromString(markdownToHtml(text.replace(/\r\n?/g, '\n'), false, true), 'text/html');
+		// The line breaks between rendered blocks would each become an empty paragraph.
+		for (const node of Array.from(rendered.body.childNodes)) {
+			if (node.nodeType === Node.TEXT_NODE && !node.textContent?.trim()) node.remove();
+		}
+		const { content } = PMDOMParser.fromSchema(view.state.schema).parseSlice(rendered.body, { context: view.state.selection.$from });
+		// One paragraph joins the text around the cursor; whole blocks split it, so a pasted heading
+		// stays a heading and the rest of the line does not end up inside a pasted code block.
+		const inline = content.childCount === 1 && content.firstChild!.type.name === 'paragraph';
+		const slice = new Slice(content, inline ? 1 : 0, inline ? 1 : 0);
+		view.dispatch(view.state.tr.replaceSelection(slice).scrollIntoView().setMeta('paste', true).setMeta('uiEvent', 'paste'));
+		return true;
 	}
 
 	/** Inserts the native clipboard image. Resolves true when there was an image to insert. */
