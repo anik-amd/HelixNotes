@@ -1209,9 +1209,12 @@
 		clearSelection();
 	}
 	if ((e.ctrlKey || e.metaKey) && e.key === 'a' && $sortedNotes.length > 0) {
-		// Only select all if focus is not in an input/editor
-		const tag = (e.target as HTMLElement)?.tagName;
-		if (tag !== 'INPUT' && tag !== 'TEXTAREA' && !(e.target as HTMLElement)?.closest('.ProseMirror')) {
+		// Only select all notes when Ctrl+A is not meant for a text field or either editor
+		// (the source editor is CodeMirror, and a read-only editor is not contenteditable).
+		const target = e.target as HTMLElement | null;
+		const tag = target?.tagName;
+		if (tag !== 'INPUT' && tag !== 'TEXTAREA' && tag !== 'SELECT' && !target?.isContentEditable
+			&& !target?.closest('.ProseMirror, .cm-editor')) {
 			e.preventDefault();
 			selectedPaths = new Set($sortedNotes.map(n => n.path));
 		}
