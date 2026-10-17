@@ -61,7 +61,7 @@
 	import { clearFormatting } from '$lib/editor/clearFormatting';
 	import { toolbarLabels, resolveToolbarLayout, groupToolbarButtons, moveToolbarButton, toolbarLayoutPreference, type ToolbarButtonId, type ToolbarArea, type ResolvedToolbarLayout } from '$lib/editor/toolbar';
 	import { buildCodeCopyDecorations, buildTaskMetaDecorations, focusedPlaceholderDecorations } from '$lib/editor/decorations';
-	import { escapeBlockStarts, serializeImageTitle, serializeInlineMarkdownKeepingDollars, serializeCodeBlock, joinMarkdownBlocks, joinListItemBlocks, type ListItemBlock, type MarkdownBlock } from '$lib/editor/markdown';
+	import { escapeBlockStarts, serializeImage, serializeInlineMarkdownKeepingDollars, serializeCodeBlock, joinMarkdownBlocks, joinListItemBlocks, type ListItemBlock, type MarkdownBlock } from '$lib/editor/markdown';
 	import { restoreTitleHeading, stripTitleHeading, type HiddenTitleHeading } from '$lib/editor/titleVisibility';
 	import { documentHeadings, sourceHeadings, activeHeadingIndex, mapDocumentHeadings, mapSourceHeadings, type OutlineHeading } from '$lib/editor/outline';
 	import { createEditorMarkdownParser } from '$lib/editor/markdownParser';
@@ -1043,6 +1043,17 @@
 					renderHTML: (attributes: Record<string, any>) => {
 						return { 'data-size': attributes.size };
 					},
+				},
+				// From HTML images (`<img width="80">`); saved as HTML again so the size is kept.
+				width: {
+					default: null,
+					parseHTML: (element: HTMLElement) => element.getAttribute('width'),
+					renderHTML: (attributes: Record<string, any>) => attributes.width ? { width: attributes.width } : {},
+				},
+				height: {
+					default: null,
+					parseHTML: (element: HTMLElement) => element.getAttribute('height'),
+					renderHTML: (attributes: Record<string, any>) => attributes.height ? { height: attributes.height } : {},
 				},
 			};
 		},
@@ -4291,6 +4302,17 @@
 		return hasImage && !hasOther;
 	}
 
+	/**
+	 * A paragraph saved as one `![...](...)` line, the only kind the parser reads a blank line above
+	 * as an empty paragraph for. An image in a link, or with a size (saved as HTML), is not one.
+	 */
+	function isImageLine(node: any): boolean {
+		if (node.type.name === 'image') return true;
+		if (node.type.name !== 'paragraph' || node.childCount !== 1) return false;
+		const image = node.firstChild;
+		return image.type.name === 'image' && image.marks.length === 0 && !image.attrs.width && !image.attrs.height;
+	}
+
 	// Saving used to serialize every block of the note each time. Document nodes are immutable and
 	// an edit replaces only the blocks it touches, so the Markdown of each top-level block is kept
 	// and a save re-serializes just what changed. The cache is dropped when the note or vault
@@ -4312,7 +4334,7 @@
 				// spacing exactly. The parser converts the marker (or a blank line before an image)
 				// back to <p></p> on load.
 				const isEmpty = node.type.name === 'paragraph' && node.childCount === 0;
-				block = { text: isEmpty ? '' : serializeNode(node), isImage: !isEmpty && isImageNode(node), isEmpty };
+				block = { text: isEmpty ? '' : serializeNode(node), isImage: !isEmpty && isImageLine(node), isEmpty };
 				serializedBlocks.set(node, block);
 			}
 			blocks.push(block);
@@ -4482,10 +4504,7 @@
 			case 'image': {
 				const src = stripAssetSrc(node.attrs.src || '');
 				if (!src) return ''; // Skip images with unresolved blob: URLs
-				const alt = node.attrs.alt || '';
-				const size = node.attrs['data-size'] || node.attrs.size || 'full';
-				const sizeSuffix = size && size !== 'full' ? `|size=${size}` : '';
-				return `![${alt}${sizeSuffix}](${src}${serializeImageTitle(node.attrs.title)})\n`;
+				return `${serializeImage(node, src)}\n`;
 			}
 			case 'imageGrid':
 				// Images serialize exactly as they do in a paragraph, one per line.

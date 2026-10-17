@@ -40,7 +40,12 @@ const schema = new Schema({
     doc: { content: 'block+' },
     paragraph: { content: 'inline*', group: 'block' },
     text: { group: 'inline' },
-    mathInline: { inline: true, group: 'inline', atom: true, attrs: { tex: { default: '' } } }
+    mathInline: { inline: true, group: 'inline', atom: true, attrs: { tex: { default: '' } } },
+    image: {
+      inline: true,
+      group: 'inline',
+      attrs: { src: {}, alt: { default: '' }, title: { default: null }, size: { default: 'full' }, width: { default: null }, height: { default: null } }
+    }
   },
   marks: {
     link: { attrs: { href: {} } },
@@ -659,4 +664,26 @@ test('joining a very large note takes linear time', () => {
   assert.ok(joined.startsWith('- a\n- b\n\nParagraph 1 with'));
   assert.equal(joined.endsWith('Paragraph 29999 with some words in it.\n'), true);
   assert.ok(!joined.includes('\n\n\n'));
+});
+
+test('an image keeps the link around it, alone or within text', () => {
+  const linked = (attrs, href = 'https://example.com') =>
+    schema.nodes.image.create(attrs, null, [schema.marks.link.create({ href })]);
+  const alone = schema.node('paragraph', null, [linked({ src: 'logo.png' })]);
+  assert.equal(serializeInlineMarkdown(alone), '[![](logo.png)](https://example.com)');
+  assert.match(markdown.render(serializeInlineMarkdown(alone)), /<a href="https:\/\/example.com"><img src="logo.png"/);
+  const within = schema.node('paragraph', null, [
+    schema.text('See '), linked({ src: 'badge.svg', alt: 'badge' }, 'https://ci.example.com'), schema.text(' here')
+  ]);
+  assert.equal(serializeInlineMarkdown(within), 'See [![badge](badge.svg)](https://ci.example.com) here');
+  // Without a link an image still goes on its own line, as before.
+  const plain = schema.node('paragraph', null, [schema.text('Text '), schema.nodes.image.create({ src: 'a.png', alt: 'alt' })]);
+  assert.equal(serializeInlineMarkdown(plain), 'Text \n![alt](a.png)');
+});
+
+test('an image with a width or height is written as HTML so the size is kept', () => {
+  const sized = schema.node('paragraph', null, [schema.nodes.image.create({ src: 'd.png', alt: 'Logo "x"', width: '120', height: '40' })]);
+  const html = serializeInlineMarkdown(sized);
+  assert.equal(html, '<img src="d.png" alt="Logo &quot;x&quot;" width="120" height="40">');
+  assert.match(markdown.render(html), /<img src="d.png" alt="Logo &quot;x&quot;" width="120" height="40">/);
 });

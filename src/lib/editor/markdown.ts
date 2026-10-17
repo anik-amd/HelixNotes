@@ -182,6 +182,32 @@ function markdownMark(mark: Mark, text: string): MarkdownMark | null {
   }
 }
 
+const escapeAttribute = (value: string) => value.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+
+/**
+ * Markdown for an image. One with a width or height (from HTML such as `<img width="80">`) is
+ * written as HTML again, since Markdown images have no size.
+ */
+export function serializeImage(node: ProseMirrorNode, source: string): string {
+  const alt = node.attrs.alt || '';
+  const size = node.attrs['data-size'] || node.attrs.size || 'full';
+  const width = String(node.attrs.width ?? '').trim();
+  const height = String(node.attrs.height ?? '').trim();
+  if (width || height) {
+    const attributes = [
+      `src="${escapeAttribute(source)}"`,
+      `alt="${escapeAttribute(alt)}"`,
+      node.attrs.title ? `title="${escapeAttribute(node.attrs.title)}"` : '',
+      width ? `width="${escapeAttribute(width)}"` : '',
+      height ? `height="${escapeAttribute(height)}"` : '',
+      size && size !== 'full' ? `data-size="${escapeAttribute(size)}"` : '',
+    ].filter(Boolean);
+    return `<img ${attributes.join(' ')}>`;
+  }
+  const sizeSuffix = size && size !== 'full' ? `|size=${size}` : '';
+  return `![${alt}${sizeSuffix}](${source}${serializeImageTitle(node.attrs.title)})`;
+}
+
 function marksForText(node: ProseMirrorNode, linksOnly = false): MarkdownMark[] {
   return node.marks
     .filter((mark) => !linksOnly || mark.type.name === 'link' || mark.type.name === 'wikiLink')
@@ -299,16 +325,18 @@ export function serializeInlineMarkdown(
       continue;
     }
 
-    transitionMarks([]);
     if (child.type.name === 'image') {
       const source = normalizeAssetSource(child.attrs.src || '');
       if (!source) continue;
-      const alt = child.attrs.alt || '';
-      const size = child.attrs['data-size'] || child.attrs.size || 'full';
-      const sizeSuffix = size && size !== 'full' ? `|size=${size}` : '';
-      if (result) result += '\n';
-      result += `![${alt}${sizeSuffix}](${source}${serializeImageTitle(child.attrs.title)})`;
-    } else if (child.type.name === 'mathInline') {
+      // An image can sit inside a link (`[![logo](logo.png)](https://site)`); other formatting closes.
+      transitionMarks(marksForText(child, true));
+      // Images go on their own line, except right after the link around them opens.
+      if (result && result.length !== openEnds[openEnds.length - 1]) result += '\n';
+      result += serializeImage(child, source);
+      continue;
+    }
+    transitionMarks([]);
+    if (child.type.name === 'mathInline') {
       const previous = index > 0 ? node.child(index - 1) : null;
       const next = index + 1 < node.childCount ? node.child(index + 1) : null;
       const forceEncoded = previous?.type.name === 'mathInline' || next?.type.name === 'mathInline'
