@@ -70,6 +70,7 @@
 	import { tagIterationKey } from '$lib/utils/tag-styles';
 	import { replaceWithWikiLink } from '$lib/editor/wikiLinks';
 	import { renamedHref, renamedLink, renamedLinkChanges, type LinkRename } from '$lib/editor/renamedLinks';
+	import { countWords, markdownCountText } from '$lib/utils/word-count';
 	import { assetSourceToMarkdown, assetUrlToLocalPath, encodeMarkdownPath, resolveFileReference, noteAssetRoot, isTrashedNote } from '$lib/utils/paths';
 	import GraphView from './GraphView.svelte';
 	import TagSuggestInput from './TagSuggestInput.svelte';
@@ -3731,24 +3732,15 @@
 		});
 	});
 
-	function countWords(text: string): number {
-		return text.trim() ? text.trim().split(/\s+/).filter(Boolean).length : 0;
-	}
-
 	function updateCounts() {
 		if (!showInfo || editorDisposed) return;
 		let text = '';
 		if (get(sourceMode)) {
-			text = source.state.doc.toString()
-				.replace(/^---[\s\S]*?---\n?/, '')
-				.replace(/!\[[^\]]*\]\([^)]*\)/g, '')
-				.replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
-				.replace(/^#{1,6}\s+/gm, '')
-				.replace(/[*_~`]+/g, '')
-				.replace(/^>\s*/gm, '')
-				.replace(/^[-*+]\s+/gm, '');
+			text = markdownCountText(source.state.doc.toString());
 		} else if (editor) {
-			text = editor.state.doc.textContent;
+			// textContent runs blocks and table cells together, so `a` and `b` in two cells read as `ab`.
+			const { doc } = editor.state;
+			text = doc.textBetween(0, doc.content.size, ' ', ' ');
 		}
 		wordCount = countWords(text);
 		charCount = text.replace(/\s/g, '').length;
@@ -7228,6 +7220,8 @@
 			const docNonWs = docNonWhitespace();
 			const text = stripTitleH1(editor && !failedLoad ? editorToMarkdown() : ($activeNote?.content ?? ''));
 			source.load(text);
+			// The counts now come from the source text.
+			scheduleCounts();
 			if (failedLoad) {
 				// The source view holds the real content, so the note counts as loaded again.
 				loadedPath = $activeNotePath ?? '';
