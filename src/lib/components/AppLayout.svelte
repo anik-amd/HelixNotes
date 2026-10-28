@@ -766,6 +766,14 @@
 		if (e.button === 4) { e.preventDefault(); navigateHistory(1); }
 	}
 
+	// True when the event is going to a text field or editor. App-wide
+	// shortcuts must leave those keys alone so editing keeps working - for
+	// example Alt+Left/Right moves by word in the editor and in inputs.
+	function isEditableTarget(target: EventTarget | null): boolean {
+		if (!(target instanceof HTMLElement)) return false;
+		return target.isContentEditable || !!target.closest('input, textarea, .cm-editor');
+	}
+
 	function handleKeydown(e: KeyboardEvent) {
 		const mod = e.ctrlKey || e.metaKey;
 		const code = e.code;
@@ -785,6 +793,10 @@
 
 		const action = matchAction(e, $keybindings);
 		if (action) {
+			// History navigation is bound to Alt+Left/Right by default. While the
+			// user is editing, those keys belong to the editor (word movement),
+			// so skip the app shortcut and let the editable surface handle them.
+			if ((action === 'nav-back' || action === 'nav-forward') && isEditableTarget(e.target)) return;
 			e.preventDefault();
 			switch (action) {
 				case 'nav-back':
