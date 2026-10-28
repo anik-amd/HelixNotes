@@ -4,7 +4,7 @@
 	import { getAppConfig, openVault, restoreExternalVault, setFontSize } from '$lib/api';
 	import { darkThemes, isIOS, isMobile } from '$lib/platform';
 	import { getWheelFontSizeAction } from '$lib/utils/editor-zoom';
-	import { getCurrentWebview } from '@tauri-apps/api/webview';
+	import { applyUiScale, defaultUiScale } from '$lib/ui-scale';
 	import { listen } from '@tauri-apps/api/event';
 	import { getCurrentWindow } from '@tauri-apps/api/window';
 	import VaultPicker from '$lib/components/VaultPicker.svelte';
@@ -259,14 +259,9 @@
 				}
 			}
 
-			// Apply saved interface scale to every desktop window; no-ops gracefully elsewhere.
-			if (config.ui_scale && config.ui_scale !== 1) {
-				try {
-					await getCurrentWebview().setZoom(config.ui_scale);
-				} catch (e) {
-					console.error('Failed to apply interface scale:', e);
-				}
-			}
+			// Apply saved interface scale (or the platform default) to desktop windows and Android.
+			const uiScale = config.ui_scale ?? defaultUiScale;
+			if (uiScale !== 1) await applyUiScale(uiScale);
 			await revealStartupWindow();
 			removeEditorZoomShortcuts = installEditorZoomShortcuts();
 

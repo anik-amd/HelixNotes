@@ -6,7 +6,7 @@
 	import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog';
 	import { listen } from '@tauri-apps/api/event';
 	import { getVersion } from '@tauri-apps/api/app';
-	import { getCurrentWebview } from '@tauri-apps/api/webview';
+	import { applyUiScale, defaultUiScale, uiScalePresets } from '$lib/ui-scale';
 	import { openUrl } from '$lib/api';
 	import type { OrphanAttachment } from '$lib/api';
 	import type { ImportResult, BackupEntry, CustomTheme, CustomThemeColors, StartupView, VaultStats } from '$lib/types';
@@ -675,16 +675,6 @@
 		{ label: 'Loose', value: 2.0 },
 	];
 
-	const uiScalePresets = [
-		{ label: '80%', value: 0.8 },
-		{ label: '90%', value: 0.9 },
-		{ label: '100%', value: 1 },
-		{ label: '125%', value: 1.25 },
-		{ label: '150%', value: 1.5 },
-		{ label: '175%', value: 1.75 },
-		{ label: '200%', value: 2 },
-	];
-
 	const contentWidthPresets: { label: string; value: number | null }[] = [
 		{ label: 'Narrow', value: 600 },
 		{ label: 'Medium', value: 760 },
@@ -698,7 +688,7 @@
 	let scrollToChangeFontSize = $state($appConfig?.scroll_to_change_font_size ?? true);
 	let activeFontFamily = $state($appConfig?.font_family ?? 'system');
 	let activeLineHeight = $state($appConfig?.line_height ?? 1.6);
-	let activeUiScale = $state($appConfig?.ui_scale ?? 1);
+	let activeUiScale = $state($appConfig?.ui_scale ?? defaultUiScale);
 	let activeContentWidth = $state<number | null>($appConfig?.content_width ?? null);
 	let themeDropdownOpen = $state(false);
 	let accentDropdownOpen = $state(false);
@@ -1141,14 +1131,6 @@
 		applyUiScale(value);
 		if ($appConfig) $appConfig.ui_scale = value;
 		setUiScale(value).catch((e) => console.error('Failed to save interface scale:', e));
-	}
-
-	async function applyUiScale(value: number) {
-		try {
-			await getCurrentWebview().setZoom(value);
-		} catch (e) {
-			console.error('Failed to apply interface scale:', e);
-		}
 	}
 
 	function selectContentWidth(value: number | null) {
@@ -2059,7 +2041,7 @@
 								{/if}
 							</div>
 
-							{#if !isMobile}
+							{#if !isMobile || isAndroid}
 								<div class="settings-section">
 									<h3>Interface Scale</h3>
 									<div class="font-size-options">
@@ -2073,7 +2055,7 @@
 											</button>
 										{/each}
 									</div>
-									<p class="setting-hint">Zooms the whole app: every panel, menu, and the editor. Use Default (100%) to reset.</p>
+									<p class="setting-hint">Zooms the whole app: every panel, menu, and the editor. Use Default ({Math.round(defaultUiScale * 100)}%) to reset.</p>
 								</div>
 							{/if}
 
