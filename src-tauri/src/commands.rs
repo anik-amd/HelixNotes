@@ -4103,6 +4103,28 @@ mod vault_identity_tests {
         config.active_bookmark_id = None;
         assert_eq!(active_vault_config(&config).unwrap().name, "Local");
     }
+
+    #[test]
+    fn the_folder_request_setting_reaches_the_sync_and_older_configs_get_the_default() {
+        let mut config = AppConfig {
+            active_vault: Some("/v".to_string()),
+            vaults: vec![VaultConfig {
+                path: "/v".to_string(),
+                name: "v".to_string(),
+                sync_provider: Some("webdav".to_string()),
+                webdav_url: Some("https://x.test/dav".to_string()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert_eq!(sync_config_from(&config).unwrap().listing_parallelism, 0);
+        config.vaults[0].sync_folder_requests = 3;
+        assert_eq!(sync_config_from(&config).unwrap().listing_parallelism, 3);
+
+        // A vault saved before the setting existed has no such field.
+        let older: VaultConfig = serde_json::from_str(r#"{"path":"/v","name":"v"}"#).unwrap();
+        assert_eq!(older.sync_folder_requests, 0);
+    }
 }
 
 fn sync_config_from(config: &AppConfig) -> Result<crate::sync::WebdavConfig, String> {
@@ -4119,6 +4141,7 @@ fn sync_config_from(config: &AppConfig) -> Result<crate::sync::WebdavConfig, Str
         url,
         username: v.webdav_username.clone().unwrap_or_default(),
         password: v.webdav_password.clone().unwrap_or_default(),
+        listing_parallelism: v.sync_folder_requests as usize,
     })
 }
 
@@ -4133,6 +4156,7 @@ pub fn set_sync_settings(
     sync_on_open: bool,
     sync_on_change: bool,
     sync_interval_minutes: u32,
+    sync_folder_requests: u32,
 ) -> Result<(), String> {
     let mut config = state.config.lock().map_err(|e| e.to_string())?;
     let active_index = active_vault_index(&config)?;
@@ -4144,6 +4168,8 @@ pub fn set_sync_settings(
     v.sync_on_open = sync_on_open;
     v.sync_on_change = sync_on_change;
     v.sync_interval_minutes = sync_interval_minutes;
+    v.sync_folder_requests =
+        crate::sync::effective_listing_parallelism(sync_folder_requests as usize) as u32;
     save_app_config(&config)?;
     Ok(())
 }

@@ -553,8 +553,9 @@ export async function setSyncSettings(
   syncOnOpen: boolean,
   syncOnChange: boolean,
   syncIntervalMinutes: number,
+  syncFolderRequests: number,
 ): Promise<void> {
-  return invoke("set_sync_settings", { provider, url, username, password, syncOnOpen, syncOnChange, syncIntervalMinutes });
+  return invoke("set_sync_settings", { provider, url, username, password, syncOnOpen, syncOnChange, syncIntervalMinutes, syncFolderRequests });
 }
 
 export async function testSyncConnection(): Promise<void> {

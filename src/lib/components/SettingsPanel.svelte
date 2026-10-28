@@ -474,6 +474,9 @@
 	let syncOnOpen = $state(activeVaultConfig($appConfig)?.sync_on_open ?? false);
 	let syncOnChange = $state(activeVaultConfig($appConfig)?.sync_on_change ?? false);
 	let syncIntervalMinutes = $state(activeVaultConfig($appConfig)?.sync_interval_minutes ?? 0);
+	// 0 means never chosen, which the sync treats as DEFAULT_LISTING_PARALLELISM (6) in sync.rs.
+	const defaultFolderRequests = 6;
+	let syncFolderRequests = $state(activeVaultConfig($appConfig)?.sync_folder_requests ?? 0);
 
 	// Re-seed the sync form when the active vault changes, so Settings reflects the current vault.
 	let lastSyncVault: string | null = null;
@@ -493,10 +496,11 @@
 		syncOnOpen = vc?.sync_on_open ?? false;
 		syncOnChange = vc?.sync_on_change ?? false;
 		syncIntervalMinutes = vc?.sync_interval_minutes ?? 0;
+		syncFolderRequests = vc?.sync_folder_requests ?? 0;
 	});
 
 	async function saveSyncSettings() {
-		await setSyncSettings(syncProvider, syncUrl || null, syncUsername || null, syncPassword || null, syncOnOpen, syncOnChange, syncIntervalMinutes);
+		await setSyncSettings(syncProvider, syncUrl || null, syncUsername || null, syncPassword || null, syncOnOpen, syncOnChange, syncIntervalMinutes, syncFolderRequests);
 		// Reflect into the active vault's config in the store so the top-bar button and auto-sync
 		// triggers update live, without an app restart.
 		if ($appConfig) {
@@ -513,6 +517,7 @@
 					sync_on_open: syncOnOpen,
 					sync_on_change: syncOnChange,
 					sync_interval_minutes: syncIntervalMinutes,
+					sync_folder_requests: syncFolderRequests,
 				} : vault),
 			};
 		}
@@ -2612,6 +2617,15 @@
 										</span>
 										<button class="toggle-switch" class:on={syncOnOpen} role="switch" aria-checked={syncOnOpen} aria-label="Sync when the vault opens" onclick={() => { syncOnOpen = !syncOnOpen; saveSyncSettings(); }}><span class="toggle-knob"></span></button>
 									</label>
+								</div>
+								<div class="settings-section">
+									<h3>Folder Request Parallelism</h3>
+									<div class="setting-options">
+										{#each [...new Set([1, 3, 6, 12, syncFolderRequests || defaultFolderRequests])].sort((a, b) => a - b) as opt}
+											<button class="option-btn" class:active={(syncFolderRequests || defaultFolderRequests) === opt} onclick={() => { syncFolderRequests = opt; saveSyncSettings(); }}>{opt}</button>
+										{/each}
+									</div>
+									<p class="setting-hint">How many folders are listed on the server at once. 6 suits most servers; choose 1 if yours rejects concurrent requests.</p>
 								</div>
 							{/if}
 						</div>

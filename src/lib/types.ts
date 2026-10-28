@@ -63,6 +63,7 @@ export interface VaultConfig {
   sync_on_open?: boolean;
   sync_on_change?: boolean;
   sync_interval_minutes?: number;
+  sync_folder_requests?: number;
   last_sync_time?: string | null;
   last_backup_time?: string | null;
 }
