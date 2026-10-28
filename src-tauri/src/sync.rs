@@ -22,12 +22,42 @@ use std::path::{Path, PathBuf};
 use tauri::{Emitter, Manager};
 use walkdir::WalkDir;
 
+/// Folder listings requested at once unless the settings say otherwise. A handful hides most of
+/// the round-trip time and stays polite to a small server.
+pub const DEFAULT_LISTING_PARALLELISM: usize = 6;
+/// The most a setting can ask for.
+pub const MAX_LISTING_PARALLELISM: usize = 16;
+
+/// What a stored setting means: `0` (never chosen) is the default, and nothing exceeds the
+/// maximum. The one place these rules live.
+pub fn effective_listing_parallelism(setting: usize) -> usize {
+    match setting {
+        0 => DEFAULT_LISTING_PARALLELISM,
+        n => n.min(MAX_LISTING_PARALLELISM),
+    }
+}
+
+/// A listing error that asking again cannot fix: a wrong login, a folder that is not there, or
+/// a client error the server will answer the same way. Anything else, such as a dropped
+/// connection, a timeout, 429 or a 5xx, may pass.
+fn is_final_listing_error(error: &str) -> bool {
+    if error.starts_with("Authentication failed") || error.starts_with("WebDAV path not found") {
+        return true;
+    }
+    error
+        .strip_prefix("WebDAV PROPFIND failed: HTTP ")
+        .and_then(|code| code.trim().parse::<u16>().ok())
+        .is_some_and(|code| (400..500).contains(&code) && code != 408 && code != 429)
+}
+
 // ───────────────────────── config ─────────────────────────
 
 pub struct WebdavConfig {
     pub url: String,
     pub username: String,
     pub password: String,
+    /// Folders listed on the server at once: `0` for the default, `1` for one at a time.
+    pub listing_parallelism: usize,
 }
 
 #[derive(Default, Clone, Serialize)]
@@ -386,6 +416,7 @@ struct WebdavClient {
     client: reqwest::blocking::Client,
     user: String,
     pass: String,
+    listing_parallelism: usize,
 }
 
 impl WebdavClient {
@@ -415,6 +446,7 @@ impl WebdavClient {
             client,
             user: cfg.username,
             pass: cfg.password,
+            listing_parallelism: effective_listing_parallelism(cfg.listing_parallelism),
         })
     }
 
@@ -460,26 +492,83 @@ impl WebdavClient {
     /// (Depth: infinity is disabled on some servers, so we walk instead).
     fn list(&self) -> Result<HashMap<String, String>, String> {
         let mut files = HashMap::new();
-        let mut visited: HashSet<String> = HashSet::new();
-        let mut queue: Vec<String> = vec![String::new()];
-        while let Some(dir) = queue.pop() {
-            if !visited.insert(dir.clone()) {
-                continue;
-            }
-            for e in self.propfind(&dir, "1")? {
-                if e.relpath == dir {
-                    continue; // the collection itself
-                }
-                if e.is_dir {
-                    if !visited.contains(&e.relpath) {
-                        queue.push(e.relpath);
+        let mut visited: HashSet<String> = HashSet::from([String::new()]);
+        // One level of folders at a time: every folder of a level is listed at once.
+        let mut level: Vec<String> = vec![String::new()];
+        while !level.is_empty() {
+            let listings = self.list_folders(&level)?;
+            let mut next = Vec::new();
+            for (dir, entries) in level.iter().zip(listings) {
+                for e in entries {
+                    if e.relpath == *dir {
+                        continue; // the collection itself
                     }
-                } else {
-                    files.insert(e.relpath, e.etag);
+                    if e.is_dir {
+                        if visited.insert(e.relpath.clone()) {
+                            next.push(e.relpath);
+                        }
+                    } else {
+                        files.insert(e.relpath, e.etag);
+                    }
                 }
             }
+            level = next;
         }
         Ok(files)
+    }
+
+    /// The contents of each folder, in the order given, with up to `listing_parallelism`
+    /// requests in flight. Once a request fails the others stop taking new folders. A folder
+    /// that failed, or was not reached, is then listed on its own, one after another, unless
+    /// its error is final: a server that dislikes concurrent requests costs time, not the sync,
+    /// while a wrong login or a missing folder is reported at once.
+    fn list_folders(&self, dirs: &[String]) -> Result<Vec<Vec<RemoteEntry>>, String> {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        let workers = dirs.len().min(self.listing_parallelism);
+        if workers <= 1 {
+            return dirs.iter().map(|dir| self.propfind(dir, "1")).collect();
+        }
+        let next = AtomicUsize::new(0);
+        let failed = AtomicBool::new(false);
+        let mut listed: Vec<Option<Result<Vec<RemoteEntry>, String>>> =
+            dirs.iter().map(|_| None).collect();
+        std::thread::scope(|scope| {
+            let threads: Vec<_> = (0..workers)
+                .map(|_| {
+                    scope.spawn(|| {
+                        let mut done = Vec::new();
+                        loop {
+                            if failed.load(Ordering::Relaxed) {
+                                break done;
+                            }
+                            let at = next.fetch_add(1, Ordering::Relaxed);
+                            let Some(dir) = dirs.get(at) else {
+                                break done;
+                            };
+                            let result = self.propfind(dir, "1");
+                            if result.is_err() {
+                                failed.store(true, Ordering::Relaxed);
+                            }
+                            done.push((at, result));
+                        }
+                    })
+                })
+                .collect();
+            for thread in threads {
+                for (at, result) in thread.join().expect("a listing thread does not panic") {
+                    listed[at] = Some(result);
+                }
+            }
+        });
+        listed
+            .into_iter()
+            .zip(dirs)
+            .map(|(result, dir)| match result {
+                Some(Ok(entries)) => Ok(entries),
+                Some(Err(error)) if is_final_listing_error(&error) => Err(error),
+                Some(Err(_)) | None => self.propfind(dir, "1"),
+            })
+            .collect()
     }
 
     fn get(&self, relpath: &str, expected_etag: &str) -> Result<Vec<u8>, String> {
@@ -1100,6 +1189,253 @@ pub fn run_sync(
 mod tests {
     use super::*;
 
+    /// A WebDAV server for listing tests: `folders` folders below the root, each holding
+    /// `note.md`, every answer coming after `delay` like a server far away. `status` is given the
+    /// folder's path and how many requests were in progress as this one arrived (itself
+    /// included), and may answer with an error status instead of the listing. Returns the URL
+    /// and a count of the requests received.
+    fn listing_server(
+        folders: usize,
+        delay: std::time::Duration,
+        status: impl Fn(&str, usize) -> Option<u16> + Send + Sync + 'static,
+    ) -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/vault", listener.local_addr().unwrap());
+        let status = Arc::new(status);
+        let requests = Arc::new(AtomicUsize::new(0));
+        let in_progress = Arc::new(AtomicUsize::new(0));
+        let counted = requests.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let mut stream = stream.unwrap();
+                let (status, requests, in_progress) =
+                    (status.clone(), requests.clone(), in_progress.clone());
+                std::thread::spawn(move || {
+                    // The whole request, body included: closing with part of it unread can
+                    // reset the connection before the client has read the answer.
+                    let mut request = Vec::new();
+                    let mut chunk = [0; 4096];
+                    let header_end = loop {
+                        let len = stream.read(&mut chunk).unwrap();
+                        assert!(len > 0);
+                        request.extend_from_slice(&chunk[..len]);
+                        if let Some(at) = request.windows(4).position(|part| part == b"\r\n\r\n") {
+                            break at + 4;
+                        }
+                    };
+                    let headers = String::from_utf8_lossy(&request[..header_end]).into_owned();
+                    let content_length: usize = headers
+                        .lines()
+                        .find_map(|line| {
+                            line.to_ascii_lowercase()
+                                .strip_prefix("content-length:")
+                                .and_then(|value| value.trim().parse().ok())
+                        })
+                        .unwrap_or(0);
+                    while request.len() < header_end + content_length {
+                        let len = stream.read(&mut chunk).unwrap();
+                        assert!(len > 0);
+                        request.extend_from_slice(&chunk[..len]);
+                    }
+                    let path = headers
+                        .split_whitespace()
+                        .nth(1)
+                        .unwrap_or("/")
+                        .trim_end_matches('/')
+                        .to_string();
+                    requests.fetch_add(1, Ordering::SeqCst);
+                    let concurrent = in_progress.fetch_add(1, Ordering::SeqCst) + 1;
+                    std::thread::sleep(delay);
+                    in_progress.fetch_sub(1, Ordering::SeqCst);
+                    let reply = match status(&path, concurrent) {
+                        Some(code) => format!(
+                            "HTTP/1.1 {code} Refused\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                        ),
+                        None => {
+                            let entry = |href: &str, collection: bool| {
+                                format!(
+                                    "<d:response><d:href>{href}</d:href><d:propstat><d:prop>\
+                                     <d:getetag>\"e\"</d:getetag><d:resourcetype>{}</d:resourcetype>\
+                                     </d:prop></d:propstat></d:response>",
+                                    if collection { "<d:collection/>" } else { "" }
+                                )
+                            };
+                            let mut body = String::new();
+                            if path == "/vault" {
+                                body += &entry("/vault/", true);
+                                for n in 1..=folders {
+                                    body += &entry(&format!("/vault/f{n}/"), true);
+                                }
+                            } else {
+                                body += &entry(&format!("{path}/"), true);
+                                body += &entry(&format!("{path}/note.md"), false);
+                            }
+                            let body =
+                                format!("<d:multistatus xmlns:d=\"DAV:\">{body}</d:multistatus>");
+                            format!(
+                                "HTTP/1.1 207 Multi-Status\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                                body.len()
+                            )
+                        }
+                    };
+                    stream.write_all(reply.as_bytes()).unwrap();
+                });
+            }
+        });
+        (url, counted)
+    }
+
+    fn listing_client(url: String, listing_parallelism: usize) -> WebdavClient {
+        WebdavClient::new(WebdavConfig {
+            url,
+            username: String::new(),
+            password: String::new(),
+            listing_parallelism,
+        })
+        .unwrap()
+    }
+
+    fn note_paths(folders: usize) -> Vec<String> {
+        let mut expected: Vec<String> = (1..=folders).map(|n| format!("f{n}/note.md")).collect();
+        expected.sort();
+        expected
+    }
+
+    fn listed_names(client: &WebdavClient) -> Vec<String> {
+        let mut found: Vec<_> = client.list().unwrap().into_keys().collect();
+        found.sort();
+        found
+    }
+
+    #[test]
+    fn folders_are_listed_at_once_by_default_and_the_result_is_complete() {
+        const FOLDERS: usize = 12;
+        const DELAY: std::time::Duration = std::time::Duration::from_millis(150);
+        let (url, _) = listing_server(FOLDERS, DELAY, |_, _| None);
+        let client = listing_client(url, 0);
+
+        let started = std::time::Instant::now();
+        let found = listed_names(&client);
+        let took = started.elapsed();
+
+        assert_eq!(found, note_paths(FOLDERS));
+        // One after another this takes (1 + FOLDERS) * DELAY = 1.95 s; the root and then two
+        // rounds of six take about 0.45 s.
+        assert!(
+            took < std::time::Duration::from_millis(1200),
+            "listing took {took:?}"
+        );
+    }
+
+    #[test]
+    fn a_setting_of_one_lists_one_folder_at_a_time_with_the_same_result() {
+        const FOLDERS: usize = 4;
+        const DELAY: std::time::Duration = std::time::Duration::from_millis(100);
+        let (url, _) = listing_server(FOLDERS, DELAY, |_, _| None);
+        let client = listing_client(url, 1);
+
+        let started = std::time::Instant::now();
+        let found = listed_names(&client);
+        let took = started.elapsed();
+
+        assert_eq!(found, note_paths(FOLDERS));
+        // The root and each folder, one after another.
+        assert!(
+            took >= DELAY * (FOLDERS as u32 + 1),
+            "listing took {took:?}"
+        );
+    }
+
+    #[test]
+    fn a_server_that_refuses_concurrent_requests_still_lists_everything() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        const FOLDERS: usize = 4;
+        let refused = Arc::new(AtomicUsize::new(0));
+        let counted = refused.clone();
+        // 503 for a request that arrives while another is being served.
+        let (url, _) = listing_server(
+            FOLDERS,
+            std::time::Duration::from_millis(60),
+            move |_, concurrent| {
+                (concurrent > 1).then(|| {
+                    counted.fetch_add(1, Ordering::SeqCst);
+                    503
+                })
+            },
+        );
+        let client = listing_client(url, 4);
+
+        assert_eq!(listed_names(&client), note_paths(FOLDERS));
+        // The fallback really ran: with four requests at once, at least one was refused.
+        assert!(refused.load(Ordering::SeqCst) >= 1);
+    }
+
+    #[test]
+    fn a_final_error_stops_the_listing_at_once_without_asking_again() {
+        const FOLDERS: usize = 30;
+        // The first folder answers 403 every time.
+        let (url, requests) =
+            listing_server(FOLDERS, std::time::Duration::from_millis(100), |path, _| {
+                path.ends_with("/f1").then_some(403)
+            });
+        let client = listing_client(url, 6);
+
+        let error = client.list().unwrap_err();
+
+        assert!(error.contains("HTTP 403"), "{error}");
+        // The root, the six first folders, and no more: the rest were never asked for, and the
+        // refused one was not repeated.
+        let received = requests.load(std::sync::atomic::Ordering::SeqCst);
+        assert!(received < 14, "{received} requests for {FOLDERS} folders");
+    }
+
+    #[test]
+    fn only_errors_that_another_attempt_could_fix_are_retried() {
+        for final_error in [
+            "Authentication failed (check username / app password)",
+            "WebDAV path not found (check the URL)",
+            "WebDAV PROPFIND failed: HTTP 403",
+            "WebDAV PROPFIND failed: HTTP 404",
+            "WebDAV PROPFIND failed: HTTP 410",
+        ] {
+            assert!(is_final_listing_error(final_error), "{final_error}");
+        }
+        for passing in [
+            "WebDAV PROPFIND failed: HTTP 429",
+            "WebDAV PROPFIND failed: HTTP 408",
+            "WebDAV PROPFIND failed: HTTP 500",
+            "WebDAV PROPFIND failed: HTTP 503",
+            "error sending request for url (http://x.test/dav): connection reset",
+            "operation timed out",
+        ] {
+            assert!(!is_final_listing_error(passing), "{passing}");
+        }
+    }
+
+    #[test]
+    fn the_listing_setting_means_default_when_zero_and_never_exceeds_the_maximum() {
+        assert_eq!(
+            effective_listing_parallelism(0),
+            DEFAULT_LISTING_PARALLELISM
+        );
+        assert_eq!(effective_listing_parallelism(1), 1);
+        assert_eq!(effective_listing_parallelism(3), 3);
+        assert_eq!(
+            effective_listing_parallelism(MAX_LISTING_PARALLELISM),
+            MAX_LISTING_PARALLELISM
+        );
+        assert_eq!(effective_listing_parallelism(1000), MAX_LISTING_PARALLELISM);
+        let parallelism =
+            |setting| listing_client("http://x.test".into(), setting).listing_parallelism;
+        assert_eq!(parallelism(0), DEFAULT_LISTING_PARALLELISM);
+        assert_eq!(parallelism(1000), MAX_LISTING_PARALLELISM);
+    }
+
     #[test]
     fn a_conflict_copy_says_so_in_its_title() {
         let raw =
@@ -1400,6 +1736,7 @@ mod tests {
             url: "http://127.0.0.1:0/".to_string(),
             username: String::new(),
             password: String::new(),
+            listing_parallelism: 0,
         })
         .unwrap();
         let mut changes = HashMap::new();
@@ -1446,6 +1783,7 @@ mod tests {
             url: "http://127.0.0.1:0/".to_string(),
             username: String::new(),
             password: String::new(),
+            listing_parallelism: 0,
         })
         .unwrap();
         let mut changes = HashMap::new();
@@ -1708,6 +2046,7 @@ mod tests {
                 url,
                 username: "alice".into(),
                 password: "secret".into(),
+                listing_parallelism: 0,
             })
             .unwrap(),
             worker,
@@ -1742,24 +2081,28 @@ mod tests {
             url: "HTTPS://Example.org:443/team/".into(),
             username: "alice".into(),
             password: "one".into(),
+            listing_parallelism: 0,
         })
         .unwrap();
         let same = WebdavClient::new(WebdavConfig {
             url: "https://example.org/team".into(),
             username: "alice".into(),
             password: "other".into(),
+            listing_parallelism: 0,
         })
         .unwrap();
         let other = WebdavClient::new(WebdavConfig {
             url: "https://example.org/team".into(),
             username: "bob".into(),
             password: "one".into(),
+            listing_parallelism: 0,
         })
         .unwrap();
         let different_folder = WebdavClient::new(WebdavConfig {
             url: "https://example.org/another".into(),
             username: "alice".into(),
             password: "one".into(),
+            listing_parallelism: 0,
         })
         .unwrap();
         assert_eq!(first.identity(), same.identity());
@@ -2164,6 +2507,7 @@ mod tests {
             url,
             username: String::new(),
             password: String::new(),
+            listing_parallelism: 0,
         })
         .unwrap();
         client.client = reqwest::blocking::Client::builder()

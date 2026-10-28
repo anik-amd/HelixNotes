@@ -102,6 +102,9 @@ pub struct VaultConfig {
     pub sync_on_change: bool,
     #[serde(default)]
     pub sync_interval_minutes: u32,
+    /// Folders to list on the server at once; 0 means the default.
+    #[serde(default)]
+    pub sync_folder_requests: u32,
     #[serde(default)]
     pub last_sync_time: Option<String>,
     #[serde(default)]
