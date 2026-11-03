@@ -669,6 +669,7 @@
 	];
 
 	const lineHeightPresets = [
+		{ label: 'Single', value: 1.0 },
 		{ label: 'Tight', value: 1.4 },
 		{ label: 'Default', value: 1.6 },
 		{ label: 'Relaxed', value: 1.8 },
@@ -2078,7 +2079,7 @@
 							{/if}
 
 							<div class="settings-section">
-								<h3>Line Height</h3>
+								<h3>Line Spacing</h3>
 								<div class="font-size-options">
 									{#each lineHeightPresets as preset}
 										<button
@@ -2091,6 +2092,7 @@
 										</button>
 									{/each}
 								</div>
+								<p class="setting-hint">Sets the spacing in the editor. Text copied to Word or email is pasted with single spacing.</p>
 							</div>
 
 							<div class="settings-section">

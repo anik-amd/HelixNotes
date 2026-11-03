@@ -66,6 +66,7 @@
 	import { documentHeadings, sourceHeadings, activeHeadingIndex, mapDocumentHeadings, mapSourceHeadings, type OutlineHeading } from '$lib/editor/outline';
 	import { createEditorMarkdownParser } from '$lib/editor/markdownParser';
 	import { collectClipboardPayload, isEmptyPayload, needsNativeClipboard, withNativeClipboard, type ClipboardPastePayload } from '$lib/utils/clipboard-paste';
+	import { applySingleLineSpacing } from '$lib/utils/clipboard-copy';
 	import { externalNoteReferences } from '$lib/editor/externalNote';
 	import { tagIterationKey } from '$lib/utils/tag-styles';
 	import { replaceWithWikiLink } from '$lib/editor/wikiLinks';
@@ -118,6 +119,27 @@
 				'Mod-Shift-8': () => toggleBulletList(),
 				'Mod-Shift-9': () => toggleTaskList(),
 			};
+		},
+	});
+	// Word and email clients give copied <p> tags their own paragraph style (extra line and
+	// paragraph spacing). Style the copied blocks so a note pastes with single spacing.
+	const CopyLineSpacing = Extension.create({
+		name: 'copyLineSpacing',
+		addProseMirrorPlugins() {
+			const serializer = DOMSerializer.fromSchema(this.editor.schema);
+			const serializeFragment = serializer.serializeFragment.bind(serializer);
+			serializer.serializeFragment = (fragment, options, target) => {
+				const dom = serializeFragment(fragment, options, target);
+				const wrapper = document.createElement('div');
+				wrapper.appendChild(dom);
+				const template = document.createElement('template');
+				template.innerHTML = applySingleLineSpacing(wrapper.innerHTML);
+				return template.content;
+			};
+			return [new Plugin({
+				key: new PluginKey('copyLineSpacing'),
+				props: { clipboardSerializer: serializer },
+			})];
 		},
 	});
 	// While a very large note is still being built in slices, its document is partial. Nothing may edit
@@ -5562,6 +5584,7 @@
 			element: editorElement,
 			editable: !$readOnly,
 			extensions: [
+				CopyLineSpacing,
 				MixedListShortcuts,
 				ProgressiveLoadGuard,
 				EditorStarterKit.configure({ code: { HTMLAttributes: { style: 'white-space: pre-wrap' } }, codeBlock: false, link: false, underline: false }),
@@ -6199,7 +6222,7 @@
 		let x = event.clientX;
 		let y = event.clientY;
 		const menuWidth = 220;
-		const menuHeight = 740;
+		const menuHeight = 780;
 		if (x + menuWidth > window.innerWidth) x = window.innerWidth - menuWidth - 8;
 		if (y + menuHeight > window.innerHeight) y = window.innerHeight - menuHeight - 8;
 		if (x < 4) x = 4;
@@ -6239,27 +6262,89 @@
 		closeTableContextMenu();
 	}
 
+	/** The current selection as clipboard HTML and text, using the same serializer as Ctrl/Cmd+C. */
+	function selectionClipboard(): { html: string; text: string } | null {
+		if (!editor) return null;
+		const { from, to } = editor.state.selection;
+		if (from === to) return null;
+		const { dom, text } = editor.view.serializeForClipboard(editor.state.selection.content());
+		return { html: dom.innerHTML, text };
+	}
+
+	/** Write HTML and its plain-text alternative. Returns false when the platform has no rich clipboard. */
+	async function writeRichClipboard({ html, text }: { html: string; text: string }): Promise<boolean> {
+		if (navigator.clipboard?.write && typeof ClipboardItem !== 'undefined') {
+			try {
+				await navigator.clipboard.write([new ClipboardItem({
+					'text/html': new Blob([html], { type: 'text/html' }),
+					'text/plain': new Blob([text], { type: 'text/plain' }),
+				})]);
+				return true;
+			} catch (error) {
+				console.warn('Rich clipboard write failed, trying the copy command:', error);
+			}
+		}
+		return false;
+	}
+
+	/** Write rich text and its plain-text alternative, falling back to text. */
+	async function writeClipboard(data: { html: string; text: string }): Promise<void> {
+		if (await writeRichClipboard(data)) return;
+		await navigator.clipboard.writeText(data.text);
+	}
+
 	async function ctxCut() {
 		if (!editor) return;
 		const origin = captureOrigin();
 		if (!canInsert(origin)) return;
 		const { from, to } = editor.state.selection;
-		if (from === to) { closeTextContextMenu(); return; }
-		const text = editor.state.doc.textBetween(from, to, '\n');
-		await navigator.clipboard.writeText(text);
+		const data = selectionClipboard();
+		if (!data) { closeTextContextMenu(); return; }
+		try {
+			await writeClipboard(data);
+		} catch (error) {
+			console.error('Failed to copy selection:', error);
+			return;
+		}
 		if (!canInsert(origin) || !isOriginCurrent(origin, true) || !editor) return;
 		editor.commands.deleteRange({ from, to });
 		closeTextContextMenu();
 	}
 
+	/** Let ProseMirror write the selection through its own copy handler; used as the fallback on WebKit. */
+	function copySelectionWithCommand(): boolean {
+		const view = editor?.view;
+		if (!view) return false;
+		view.focus();
+		try {
+			return document.execCommand('copy');
+		} catch {
+			return false;
+		}
+	}
+
 	async function ctxCopy() {
-		if (!editor) return;
-		const origin = captureOrigin();
-		const { from, to } = editor.state.selection;
-		if (from === to) { closeTextContextMenu(); return; }
-		const text = editor.state.doc.textBetween(from, to, '\n');
-		await navigator.clipboard.writeText(text);
-		if (isOriginCurrent(origin)) closeTextContextMenu();
+		const data = selectionClipboard();
+		if (!data) { closeTextContextMenu(); return; }
+		if (!(await writeRichClipboard(data)) && !copySelectionWithCommand()) {
+			try {
+				await navigator.clipboard.writeText(data.text);
+			} catch (error) {
+				console.error('Failed to copy selection:', error);
+			}
+		}
+		closeTextContextMenu();
+	}
+
+	async function ctxCopyPlain() {
+		const data = selectionClipboard();
+		if (!data) { closeTextContextMenu(); return; }
+		try {
+			await navigator.clipboard.writeText(data.text);
+		} catch (error) {
+			console.error('Failed to copy selection as plain text:', error);
+		}
+		closeTextContextMenu();
 	}
 
 	/**
@@ -8662,6 +8747,10 @@
 				<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
 				Copy
 				<span class="text-ctx-shortcut">{modKey}+C</span>
+			</button>
+			<button onclick={ctxCopyPlain}>
+				<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16M12 5v14M8 19h8"/></svg>
+				Copy as Plain Text
 			</button>
 			<button onclick={ctxPaste}>
 				<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 4h2a2 2 0 012 2v14a2 2 0 01-2 2H6a2 2 0 01-2-2V6a2 2 0 012-2h2"/><rect x="8" y="2" width="8" height="4" rx="1" ry="1"/></svg>
