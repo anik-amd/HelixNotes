@@ -404,10 +404,20 @@ fn scan_local(vault: &str) -> Result<HashMap<String, LocalFile>, String> {
 
 // ───────────────────────── WebDAV client ─────────────────────────
 
+#[derive(Debug)]
 struct RemoteEntry {
     relpath: String,
     etag: String,
+    last_modified: String,
     is_dir: bool,
+}
+
+/// What a listing says about a remote file. `etag` is empty when the server gives no strong
+/// validator; `last_modified` is the fallback conditional header for those servers.
+#[derive(Debug)]
+struct RemoteFile {
+    etag: String,
+    last_modified: String,
 }
 
 struct WebdavClient {
@@ -464,7 +474,7 @@ impl WebdavClient {
 
     fn propfind(&self, relpath: &str, depth: &str) -> Result<Vec<RemoteEntry>, String> {
         let method = reqwest::Method::from_bytes(b"PROPFIND").unwrap();
-        let body = r#"<?xml version="1.0" encoding="utf-8"?><d:propfind xmlns:d="DAV:"><d:prop><d:getetag/><d:resourcetype/></d:prop></d:propfind>"#;
+        let body = r#"<?xml version="1.0" encoding="utf-8"?><d:propfind xmlns:d="DAV:"><d:prop><d:getetag/><d:getlastmodified/><d:resourcetype/></d:prop></d:propfind>"#;
         let resp = self
             .client
             .request(method, self.url_for(relpath))
@@ -488,9 +498,9 @@ impl WebdavClient {
         parse_multistatus(&text, &self.base_path)
     }
 
-    /// Recursively list all files (relpath -> etag) by walking collections at Depth 1
+    /// Recursively list all files (relpath -> metadata) by walking collections at Depth 1
     /// (Depth: infinity is disabled on some servers, so we walk instead).
-    fn list(&self) -> Result<HashMap<String, String>, String> {
+    fn list(&self) -> Result<HashMap<String, RemoteFile>, String> {
         let mut files = HashMap::new();
         let mut visited: HashSet<String> = HashSet::from([String::new()]);
         // One level of folders at a time: every folder of a level is listed at once.
@@ -508,7 +518,13 @@ impl WebdavClient {
                             next.push(e.relpath);
                         }
                     } else {
-                        files.insert(e.relpath, e.etag);
+                        files.insert(
+                            e.relpath,
+                            RemoteFile {
+                                etag: e.etag,
+                                last_modified: e.last_modified,
+                            },
+                        );
                     }
                 }
             }
@@ -614,7 +630,13 @@ impl WebdavClient {
         Ok(bytes)
     }
 
-    fn put(&self, relpath: &str, bytes: &[u8], prior_etag: Option<&str>) -> Result<(), String> {
+    fn put(
+        &self,
+        relpath: &str,
+        bytes: &[u8],
+        prior_etag: Option<&str>,
+        prior_last_modified: Option<&str>,
+    ) -> Result<(), String> {
         let mut request = self
             .client
             .put(self.url_for(relpath))
@@ -622,11 +644,16 @@ impl WebdavClient {
             .body(bytes.to_vec());
         request = match prior_etag {
             Some(etag) if !etag.is_empty() => request.header("If-Match", etag),
-            Some(_) => {
-                return Err(format!(
-                    "Cannot safely overwrite {relpath}: server provides no strong ETag"
-                ))
-            }
+            Some(_) => match prior_last_modified {
+                Some(last_modified) if !last_modified.is_empty() => {
+                    request.header("If-Unmodified-Since", last_modified)
+                }
+                _ => {
+                    return Err(format!(
+                        "Cannot safely overwrite {relpath}: server provides no strong ETag or Last-Modified"
+                    ))
+                }
+            },
             None => request.header("If-None-Match", "*"),
         };
         let resp = request
@@ -646,17 +673,21 @@ impl WebdavClient {
         Ok(())
     }
 
-    fn delete(&self, relpath: &str, etag: &str) -> Result<(), String> {
-        if etag.is_empty() {
-            return Err(format!(
-                "Cannot safely delete {relpath}: server provides no strong ETag"
-            ));
-        }
-        let resp = self
+    fn delete(&self, relpath: &str, etag: &str, last_modified: &str) -> Result<(), String> {
+        let mut request = self
             .client
             .delete(self.url_for(relpath))
-            .basic_auth(&self.user, Some(&self.pass))
-            .header("If-Match", etag)
+            .basic_auth(&self.user, Some(&self.pass));
+        request = if !etag.is_empty() {
+            request.header("If-Match", etag)
+        } else if !last_modified.is_empty() {
+            request.header("If-Unmodified-Since", last_modified)
+        } else {
+            return Err(format!(
+                "Cannot safely delete {relpath}: server provides no strong ETag or Last-Modified"
+            ));
+        };
+        let resp = request
             .send()
             .map_err(|e| webdav_error("delete", relpath, e))?;
         if resp.status().as_u16() == 412 || resp.status().as_u16() == 404 {
@@ -721,10 +752,11 @@ impl WebdavClient {
         relpath: &str,
         bytes: &[u8],
         prior_etag: Option<&str>,
+        prior_last_modified: Option<&str>,
         created: &mut HashSet<String>,
     ) -> Result<String, String> {
         self.ensure_dirs(relpath, created)?;
-        self.put(relpath, bytes, prior_etag)?;
+        self.put(relpath, bytes, prior_etag, prior_last_modified)?;
         let etag = self.etag_for(relpath)?;
         if self.get(relpath, &etag)?.as_slice() != bytes {
             return Err(format!(
@@ -790,12 +822,14 @@ fn parse_multistatus(xml: &str, base_path: &str) -> Result<Vec<RemoteEntry>, Str
         None,
         Href,
         Etag,
+        LastModified,
     }
 
     let mut reader = Reader::from_str(xml);
     let mut entries = Vec::new();
     let mut href: Option<String> = None;
     let mut etag: Option<String> = None;
+    let mut last_modified: Option<String> = None;
     let mut is_dir = false;
     let mut cap = Cap::None;
     let mut buf = String::new();
@@ -806,6 +840,7 @@ fn parse_multistatus(xml: &str, base_path: &str) -> Result<Vec<RemoteEntry>, Str
                 b"response" => {
                     href = None;
                     etag = None;
+                    last_modified = None;
                     is_dir = false;
                 }
                 b"href" => {
@@ -814,6 +849,10 @@ fn parse_multistatus(xml: &str, base_path: &str) -> Result<Vec<RemoteEntry>, Str
                 }
                 b"getetag" => {
                     cap = Cap::Etag;
+                    buf.clear();
+                }
+                b"getlastmodified" => {
+                    cap = Cap::LastModified;
                     buf.clear();
                 }
                 b"collection" => is_dir = true,
@@ -866,12 +905,17 @@ fn parse_multistatus(xml: &str, base_path: &str) -> Result<Vec<RemoteEntry>, Str
                     etag = Some(buf.clone());
                     cap = Cap::None;
                 }
+                b"getlastmodified" => {
+                    last_modified = Some(buf.trim().to_string());
+                    cap = Cap::None;
+                }
                 b"response" => {
                     if let Some(h) = href.take() {
                         if let Some(rel) = href_to_relpath(&h, base_path)? {
                             entries.push(RemoteEntry {
                                 relpath: rel,
                                 etag: etag.take().map(|s| strong_etag(&s)).unwrap_or_default(),
+                                last_modified: last_modified.take().unwrap_or_default(),
                                 is_dir,
                             });
                         }
@@ -924,7 +968,7 @@ fn apply_changes(
     client: &WebdavClient,
     vault: &str,
     local: &HashMap<String, LocalFile>,
-    remote: &HashMap<String, String>,
+    remote: &HashMap<String, RemoteFile>,
     manifest: &SyncManifest,
     changes: &mut HashMap<PathBuf, &'static str>,
     write_guard: &tokio::sync::Mutex<()>,
@@ -947,7 +991,8 @@ fn apply_changes(
         let r = remote.get(key);
         let m = manifest.files.get(key);
         match (l, r) {
-            (Some(lf), Some(etag)) => {
+            (Some(lf), Some(remote)) => {
+                let etag = &remote.etag;
                 // On ETag-less servers, a listing cannot tell us if content changed.
                 // Read every time and compare to the last accepted remote content hash.
                 let remote_bytes =
@@ -970,7 +1015,13 @@ fn apply_changes(
                     );
                 } else if local_changed && !remote_changed {
                     let bytes = read_scanned_local(lf)?;
-                    let new_etag = client.upload(key, &bytes, Some(etag), &mut created)?;
+                    let new_etag = client.upload(
+                        key,
+                        &bytes,
+                        Some(etag),
+                        Some(&remote.last_modified),
+                        &mut created,
+                    )?;
                     new_m
                         .files
                         .insert(key.clone(), manifest_entry(lf.hash.clone(), &new_etag));
@@ -1007,7 +1058,7 @@ fn apply_changes(
                             lbytes
                         };
                         new_m.files.insert(key.clone(), manifest_entry(hash, etag));
-                        let cetag = client.upload(&ckey, &lbytes, None, &mut created)?;
+                        let cetag = client.upload(&ckey, &lbytes, None, None, &mut created)?;
                         new_m
                             .files
                             .insert(ckey, manifest_entry(sha256_hex(&lbytes), &cetag));
@@ -1018,7 +1069,7 @@ fn apply_changes(
             (Some(lf), None) => match m {
                 None => {
                     let bytes = read_scanned_local(lf)?;
-                    let etag = client.upload(key, &bytes, None, &mut created)?;
+                    let etag = client.upload(key, &bytes, None, None, &mut created)?;
                     new_m
                         .files
                         .insert(key.clone(), manifest_entry(lf.hash.clone(), &etag));
@@ -1026,7 +1077,7 @@ fn apply_changes(
                 }
                 Some(me) if me.local_hash != lf.hash => {
                     let bytes = read_scanned_local(lf)?;
-                    let etag = client.upload(key, &bytes, None, &mut created)?;
+                    let etag = client.upload(key, &bytes, None, None, &mut created)?;
                     new_m
                         .files
                         .insert(key.clone(), manifest_entry(lf.hash.clone(), &etag));
@@ -1040,7 +1091,8 @@ fn apply_changes(
                     sum.deleted_local += 1;
                 }
             },
-            (None, Some(etag)) => {
+            (None, Some(remote)) => {
+                let etag = &remote.etag;
                 let bytes = if etag.is_empty() || m.is_none_or(|old| old.remote_etag != *etag) {
                     Some(client.get(key, etag)?)
                 } else {
@@ -1060,7 +1112,7 @@ fn apply_changes(
                     );
                     sum.downloaded += 1;
                 } else {
-                    client.delete(key, etag)?;
+                    client.delete(key, etag, &remote.last_modified)?;
                     sum.deleted_remote += 1;
                 }
             }
@@ -1097,7 +1149,7 @@ pub fn run_sync(
         "sync-progress",
         serde_json::json!({ "vault_path": vault, "status": "listing" }),
     );
-    let remote: HashMap<String, String> = client
+    let remote: HashMap<String, RemoteFile> = client
         .list()?
         .into_iter()
         .filter(|(k, _)| is_synced_relpath(k))
@@ -1188,6 +1240,20 @@ pub fn run_sync(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn remote_file(etag: &str) -> RemoteFile {
+        RemoteFile {
+            etag: etag.to_string(),
+            last_modified: String::new(),
+        }
+    }
+
+    fn remote_file_with_modified(etag: &str, last_modified: &str) -> RemoteFile {
+        RemoteFile {
+            etag: etag.to_string(),
+            last_modified: last_modified.to_string(),
+        }
+    }
 
     /// A WebDAV server for listing tests: `folders` folders below the root, each holding
     /// `note.md`, every answer coming after `delay` like a server far away. `status` is given the
@@ -1720,7 +1786,7 @@ mod tests {
         let modified = fs::metadata(&path).unwrap().modified().unwrap();
         let vault_path = vault.path().to_str().unwrap();
         let local = scan_local(vault_path).unwrap();
-        let remote = HashMap::from([("note.md".to_string(), "\"etag\"".to_string())]);
+        let remote = HashMap::from([("note.md".to_string(), remote_file("\"etag\""))]);
         let manifest = SyncManifest {
             identity: String::new(),
             files: HashMap::from([(
@@ -2150,7 +2216,7 @@ mod tests {
             &client,
             root,
             &local,
-            &HashMap::from([("note.md".into(), String::new())]),
+            &HashMap::from([("note.md".into(), remote_file(""))]),
             &manifest,
             &mut changes,
             &tokio::sync::Mutex::new(()),
@@ -2165,7 +2231,7 @@ mod tests {
             &client,
             root,
             &HashMap::new(),
-            &HashMap::from([("note.md".into(), String::new())]),
+            &HashMap::from([("note.md".into(), remote_file(""))]),
             &next,
             &mut HashMap::new(),
             &tokio::sync::Mutex::new(()),
@@ -2190,7 +2256,7 @@ mod tests {
                 manifest_entry(sha256_hex(b"old"), "\"e1\""),
             )]),
         };
-        let remote = HashMap::from([("note.md".to_string(), "\"e2\"".to_string())]);
+        let remote = HashMap::from([("note.md".to_string(), remote_file("\"e2\""))]);
         // Every download is followed by a PROPFIND that rechecks the ETag.
         let e2 = r#"<multistatus><response><href>/vault/note.md</href><getetag>&quot;e2&quot;</getetag></response></multistatus>"#;
         let e3 = r#"<multistatus><response><href>/vault/note.md</href><getetag>&quot;e3&quot;</getetag></response></multistatus>"#;
@@ -2268,6 +2334,57 @@ mod tests {
     }
 
     #[test]
+    fn an_etagless_local_edit_uses_last_modified_as_the_conditional_validator() {
+        let vault = tempfile::tempdir().unwrap();
+        fs::write(vault.path().join("note.md"), b"mine").unwrap();
+        let root = vault.path().to_str().unwrap();
+        let manifest = SyncManifest {
+            identity: String::new(),
+            files: HashMap::from([("note.md".into(), manifest_entry(sha256_hex(b"old"), ""))]),
+        };
+        let last_modified = "Wed, 21 Oct 2015 07:28:00 GMT";
+        let remote = HashMap::from([(
+            "note.md".to_string(),
+            remote_file_with_modified("", last_modified),
+        )]);
+        let after_upload = concat!(
+            "<multistatus><response><href>/vault/note.md</href>",
+            "<getlastmodified>Wed, 21 Oct 2015 07:28:00 GMT</getlastmodified>",
+            "</response></multistatus>"
+        );
+        let (client, requests) = webdav_test_client(vec![
+            ("200 OK", "old"),
+            ("204 No Content", ""),
+            ("207 Multi-Status", after_upload),
+            ("200 OK", "mine"),
+        ]);
+        let (next, summary) = apply_changes(
+            &client,
+            root,
+            &scan_local(root).unwrap(),
+            &remote,
+            &manifest,
+            &mut HashMap::new(),
+            &tokio::sync::Mutex::new(()),
+        )
+        .unwrap();
+        assert_eq!((summary.uploaded, summary.conflicts), (1, 0));
+        assert_eq!(next.files["note.md"].remote_etag, "");
+        assert_eq!(next.files["note.md"].remote_hash, sha256_hex(b"mine"));
+        let requests = requests.join().unwrap();
+        assert!(requests[0].starts_with("GET /vault/note.md "));
+        assert!(requests[1].starts_with("PUT /vault/note.md "));
+        assert!(
+            requests[1]
+                .to_ascii_lowercase()
+                .contains("if-unmodified-since: wed, 21 oct 2015 07:28:00 gmt"),
+            "{requests:?}"
+        );
+        assert!(requests[2].starts_with("PROPFIND /vault/note.md "));
+        assert!(requests[3].starts_with("GET /vault/note.md "));
+    }
+
+    #[test]
     fn changed_get_etag_never_installs_stale_snapshot() {
         let (client, requests) = webdav_test_client(vec![("200 OK\r\nETag: \"new\"", "newer")]);
         assert!(client
@@ -2285,7 +2402,7 @@ mod tests {
     fn conditional_writes_preserve_concurrent_remote_content() {
         let (client, requests) = webdav_test_client(vec![("412 Precondition Failed", "")]);
         assert!(client
-            .put("note.md", b"edited", Some("\"old\""))
+            .put("note.md", b"edited", Some("\"old\""), None)
             .unwrap_err()
             .contains("retry"));
         let requests = requests.join().unwrap();
@@ -2295,7 +2412,7 @@ mod tests {
 
         let (client, requests) = webdav_test_client(vec![("412 Precondition Failed", "")]);
         assert!(client
-            .delete("note.md", "\"old\"")
+            .delete("note.md", "\"old\"", "")
             .unwrap_err()
             .contains("retry"));
         assert!(requests.join().unwrap()[0]
@@ -2304,7 +2421,7 @@ mod tests {
 
         let (client, requests) = webdav_test_client(vec![("412 Precondition Failed", "")]);
         assert!(client
-            .put("new.md", b"new", None)
+            .put("new.md", b"new", None, None)
             .unwrap_err()
             .contains("retry"));
         assert!(requests.join().unwrap()[0]
@@ -2312,11 +2429,40 @@ mod tests {
             .contains("if-none-match: *"));
         let (client, requests) = webdav_test_client(vec![]);
         assert!(client
-            .put("note.md", b"edited", Some(""))
+            .put("note.md", b"edited", Some(""), None)
             .unwrap_err()
             .contains("no strong ETag"));
         assert!(client
-            .delete("note.md", "")
+            .delete("note.md", "", "")
+            .unwrap_err()
+            .contains("no strong ETag"));
+        assert!(requests.join().unwrap().is_empty());
+    }
+
+    #[test]
+    fn conditional_writes_fall_back_to_last_modified_without_a_strong_etag() {
+        let last_modified = "Wed, 21 Oct 2015 07:28:00 GMT";
+        let (client, requests) = webdav_test_client(vec![("204 No Content", "")]);
+        client
+            .put("note.md", b"edited", Some(""), Some(last_modified))
+            .unwrap();
+        let requests = requests.join().unwrap();
+        assert!(
+            requests[0]
+                .to_ascii_lowercase()
+                .contains("if-unmodified-since: wed, 21 oct 2015 07:28:00 gmt"),
+            "{requests:?}"
+        );
+
+        let (client, requests) = webdav_test_client(vec![("204 No Content", "")]);
+        client.delete("note.md", "", last_modified).unwrap();
+        assert!(requests.join().unwrap()[0]
+            .to_ascii_lowercase()
+            .contains("if-unmodified-since: wed, 21 oct 2015 07:28:00 gmt"));
+
+        let (client, requests) = webdav_test_client(vec![]);
+        assert!(client
+            .delete("note.md", "", "")
             .unwrap_err()
             .contains("no strong ETag"));
         assert!(requests.join().unwrap().is_empty());
@@ -2335,6 +2481,20 @@ mod tests {
         assert_eq!(entries[0].relpath, "a&b'<>\"-é-雪.md");
         assert_eq!(entries[0].etag, "\"v&'<>雪é\"");
         assert!(!entries[0].is_dir);
+    }
+
+    #[test]
+    fn multistatus_keeps_last_modified_for_etagless_servers() {
+        let xml = r#"<d:multistatus xmlns:d="DAV:"><d:response>
+            <d:href>/vault/note.md</d:href>
+            <d:propstat><d:prop>
+                <d:getlastmodified>Wed, 21 Oct 2015 07:28:00 GMT</d:getlastmodified>
+            </d:prop></d:propstat>
+        </d:response></d:multistatus>"#;
+        let entries = parse_multistatus(xml, "/vault").unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].etag, "");
+        assert_eq!(entries[0].last_modified, "Wed, 21 Oct 2015 07:28:00 GMT");
     }
 
     #[test]
