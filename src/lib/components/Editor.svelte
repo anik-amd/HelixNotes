@@ -5,7 +5,6 @@
 	import StarterKit from '@tiptap/starter-kit';
 	import TaskList from '@tiptap/extension-task-list';
 	import TaskItem from '@tiptap/extension-task-item';
-	import { Table } from '@tiptap/extension-table';
 	import { TableRow } from '@tiptap/extension-table-row';
 	import { TableCell } from '@tiptap/extension-table-cell';
 	import { TableHeader } from '@tiptap/extension-table-header';
@@ -19,6 +18,7 @@
 	import { Color } from '@tiptap/extension-color';
 	import { TextStyle } from '@tiptap/extension-text-style';
 	import { CachedCodeBlockLowlight } from '$lib/editor/extensions/cachedCodeBlockLowlight';
+	import { AlwaysResizableTable } from '$lib/editor/tableExtension';
 	import { Details, DetailsSummary, DetailsContent } from '@tiptap/extension-details';
 	import TextAlign from '@tiptap/extension-text-align';
 	import { common, createLowlight } from 'lowlight';
@@ -5591,7 +5591,7 @@
 				FocusedPlaceholder,
 				TaskList,
 				TaskItem.extend(keepCodeWhitespace).configure({ nested: true }),
-				Table.configure({ resizable: true }),
+				AlwaysResizableTable.configure({ resizable: true }),
 				TableRow,
 				CustomTableCell,
 				CustomTableHeader,
