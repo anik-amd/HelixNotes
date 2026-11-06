@@ -1,4 +1,5 @@
 import CodeBlock, { type CodeBlockOptions } from '@tiptap/extension-code-block';
+import { toggleSelectedCode } from './toggleSelectedCode.ts';
 import type { Node as ProseMirrorNode } from '@tiptap/pm/model';
 import { Plugin, PluginKey } from '@tiptap/pm/state';
 import { Decoration, DecorationSet } from '@tiptap/pm/view';
@@ -121,6 +122,9 @@ export function createCodeBlockHighlightPlugin({
 export const CachedCodeBlockLowlight = CodeBlock.extend<CodeBlockOptions & { lowlight: CodeHighlighter | null }>({
 	addOptions() {
 		return { ...this.parent!(), lowlight: null };
+	},
+	addCommands() {
+		return { ...this.parent?.(), toggleCodeBlock: (attributes) => toggleSelectedCode(attributes) };
 	},
 	addAttributes() {
 		// A block written without a language keeps none, so a bare fence is not saved as the default
