@@ -32,7 +32,19 @@ export const NOTEBOOK_ICON_OPTIONS = [
   { id: 'mail', label: 'Mail' },
   { id: 'lock', label: 'Private' },
   { id: 'wrench', label: 'Tools' },
-  { id: 'pen', label: 'Writing' }
+  { id: 'pen', label: 'Writing' },
+  { id: 'tag', label: 'Tag' },
+  { id: 'clock', label: 'Clock' },
+  { id: 'bell', label: 'Reminders' },
+  { id: 'pin', label: 'Location' },
+  { id: 'gift', label: 'Gifts' },
+  { id: 'trophy', label: 'Goals' },
+  { id: 'rocket', label: 'Projects' },
+  { id: 'flag', label: 'Flag' },
+  { id: 'shield', label: 'Security' },
+  { id: 'gear', label: 'Settings' },
+  { id: 'search', label: 'Search' },
+  { id: 'zap', label: 'Energy' }
 ] as const;
 
 export type NotebookIconId = (typeof NOTEBOOK_ICON_OPTIONS)[number]['id'];
@@ -78,7 +90,19 @@ const BUILTIN_IDS: Record<NotebookIconId, true> = {
   mail: true,
   lock: true,
   wrench: true,
-  pen: true
+  pen: true,
+  tag: true,
+  clock: true,
+  bell: true,
+  pin: true,
+  gift: true,
+  trophy: true,
+  rocket: true,
+  flag: true,
+  shield: true,
+  gear: true,
+  search: true,
+  zap: true
 };
 
 export function normalizeNotebookIconKey(path: string): string {
