@@ -618,6 +618,16 @@
 		{ id: 'cyberpunk', label: 'Cyberpunk', bg: '#0a0e17', sidebar: '#060911', accent: '#ff0080' },
 		{ id: 'black', label: 'Black', bg: '#000000', sidebar: '#0a0a0a', accent: '#ffffff' },
 		{ id: 'one-dark', label: 'One Dark', bg: '#282c34', sidebar: '#21252b', accent: '#61afef' },
+		{ id: 'matrix', label: 'Matrix', bg: '#0a0f0a', sidebar: '#060a06', accent: '#00ff66' },
+		{ id: 'amber-crt', label: 'Amber CRT', bg: '#180f00', sidebar: '#120b00', accent: '#ffb000' },
+		{ id: 'sepia', label: 'Sepia', bg: '#f4ecd8', sidebar: '#ebe0c7', accent: '#9a6a3a' },
+		{ id: 'deep-ocean', label: 'Deep Ocean', bg: '#081821', sidebar: '#05121a', accent: '#35c4d4' },
+		{ id: 'sandstone', label: 'Sandstone', bg: '#faf3e8', sidebar: '#f1e6d3', accent: '#c76b3f' },
+		{ id: 'lavender', label: 'Lavender', bg: '#f6f3fc', sidebar: '#ece6f7', accent: '#7c5cc4' },
+		{ id: 'graphite', label: 'Graphite', bg: '#17181a', sidebar: '#121315', accent: '#7f9cb3' },
+		{ id: 'nebula', label: 'Nebula', bg: '#14102a', sidebar: '#0f0c21', accent: '#b388ff' },
+		{ id: 'wine', label: 'Wine', bg: '#1c0f14', sidebar: '#160b10', accent: '#d98ca0' },
+		{ id: 'jade', label: 'Jade', bg: '#0b1a15', sidebar: '#071410', accent: '#2bbd8e' },
 	];
 
 	// Keep the default themes pinned at the top and sort the rest alphabetically.
@@ -801,7 +811,7 @@
 		root.classList.remove('dark');
 		root.removeAttribute('data-theme');
 		for (const v of varsToClear) root.style.removeProperty(v);
-		const namedThemes = ['solarized-light','solarized-dark','catppuccin','nord','tokyo-night','github-light','github-dark','dracula','blueberry','forest-green','gruvbox','midnight-tide','cherry-blossom','synthwave','ember','moonlit','light-coffee','dark-coffee','cotton-candy','crimson','cloud','peach','material-dark','material-light','monokai','rose-pine','everforest','horizon','cyberpunk','black','one-dark'];
+		const namedThemes = ['solarized-light','solarized-dark','catppuccin','nord','tokyo-night','github-light','github-dark','dracula','blueberry','forest-green','gruvbox','midnight-tide','cherry-blossom','synthwave','ember','moonlit','light-coffee','dark-coffee','cotton-candy','crimson','cloud','peach','material-dark','material-light','monokai','rose-pine','everforest','horizon','cyberpunk','black','one-dark','matrix','amber-crt','sepia','deep-ocean','sandstone','lavender','graphite','nebula','wine','jade'];
 		if ($resolvedTheme.startsWith('custom-')) {
 			const ct = $customThemes.find(c => c.id === $resolvedTheme);
 			if (ct) {

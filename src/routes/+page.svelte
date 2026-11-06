@@ -188,7 +188,7 @@
 				? (prefersDark ? config.system_dark_theme || 'dark' : config.system_light_theme || 'light')
 				: rawTheme;
 			const root = document.documentElement;
-			const namedThemes = ['solarized-light', 'solarized-dark', 'catppuccin', 'nord', 'tokyo-night', 'github-light', 'github-dark', 'dracula', 'blueberry', 'forest-green', 'gruvbox', 'midnight-tide', 'cherry-blossom', 'synthwave', 'ember', 'moonlit', 'light-coffee', 'dark-coffee', 'cotton-candy', 'crimson', 'cloud', 'peach', 'material-dark', 'material-light', 'monokai', 'rose-pine', 'everforest', 'horizon', 'cyberpunk', 'black', 'one-dark'];
+			const namedThemes = ['solarized-light', 'solarized-dark', 'catppuccin', 'nord', 'tokyo-night', 'github-light', 'github-dark', 'dracula', 'blueberry', 'forest-green', 'gruvbox', 'midnight-tide', 'cherry-blossom', 'synthwave', 'ember', 'moonlit', 'light-coffee', 'dark-coffee', 'cotton-candy', 'crimson', 'cloud', 'peach', 'material-dark', 'material-light', 'monokai', 'rose-pine', 'everforest', 'horizon', 'cyberpunk', 'black', 'one-dark', 'matrix', 'amber-crt', 'sepia', 'deep-ocean', 'sandstone', 'lavender', 'graphite', 'nebula', 'wine', 'jade'];
 			root.classList.remove('dark');
 			root.removeAttribute('data-theme');
 			if (namedThemes.includes(themeValue)) {

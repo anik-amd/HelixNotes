@@ -43,6 +43,13 @@ export const darkThemes = [
 	'cyberpunk',
 	'black',
 	'one-dark',
+	'matrix',
+	'amber-crt',
+	'deep-ocean',
+	'graphite',
+	'nebula',
+	'wine',
+	'jade',
 ];
 
 export function isDarkTheme(theme: string): boolean {
