@@ -1,0 +1,184 @@
+name: Android CDP Debug
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  cdp:
+    name: Inspect WebView over CDP
+    runs-on: ubuntu-24.04
+    env:
+      ANDROID_HOME: /usr/local/lib/android/sdk
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.18.0
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-linux-android
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install Android SDK and NDK
+        run: |
+          sdkmanager_path=$(command -v sdkmanager || find "$ANDROID_HOME/cmdline-tools" -name sdkmanager | head -n 1)
+          test -n "$sdkmanager_path"
+          yes | "$sdkmanager_path" --licenses >/dev/null || true
+          "$sdkmanager_path" --install "platforms;android-36" "build-tools;36.0.0" "ndk;27.0.12077973"
+          echo "NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_ROOT=$ANDROID_HOME/ndk/27.0.12077973" >> "$GITHUB_ENV"
+          echo "sdk.dir=$ANDROID_HOME" > src-tauri/gen/android/local.properties
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build debug x86_64 APK
+        run: pnpm tauri android build --apk --debug --target x86_64
+
+      - name: Collect APK
+        run: |
+          apk=$(find src-tauri/gen/android/app/build/outputs/apk -name '*debug*.apk' | head -n 1)
+          test -n "$apk"
+          cp "$apk" helixnotes-x86_64-debug.apk
+
+      - name: Write CDP inspector
+        run: |
+          cat > cdp-inspect.mjs <<'EOF'
+          import fs from 'node:fs';
+
+          const pages = await (await fetch('http://127.0.0.1:9222/json')).json();
+          console.log('PAGES', JSON.stringify(pages, null, 2));
+          const page = pages.find((p) => p.type === 'page') ?? pages[0];
+          if (!page) throw new Error('no CDP page');
+
+          const ws = new WebSocket(page.webSocketDebuggerUrl);
+          await new Promise((resolve, reject) => { ws.onopen = resolve; ws.onerror = reject; });
+          let seq = 0;
+          const waiting = new Map();
+          const events = [];
+          ws.onmessage = (event) => {
+            const msg = JSON.parse(event.data);
+            if (msg.id) { waiting.get(msg.id)?.(msg); waiting.delete(msg.id); }
+            else {
+              events.push(msg);
+              if (msg.method === 'Runtime.exceptionThrown' || msg.method === 'Runtime.consoleAPICalled') {
+                console.log('EVENT', JSON.stringify(msg).slice(0, 4000));
+              }
+            }
+          };
+          const send = (method, params = {}) => new Promise((resolve) => {
+            const id = ++seq;
+            waiting.set(id, resolve);
+            ws.send(JSON.stringify({ id, method, params }));
+          });
+
+          await send('Runtime.enable');
+          await send('Page.enable');
+          const expression = `(() => {
+            const el = document.querySelector('.vault-picker');
+            const r = el?.getBoundingClientRect();
+            const cs = el ? getComputedStyle(el) : null;
+            return {
+              url: location.href,
+              ready: document.readyState,
+              title: document.title,
+              bodyText: document.body.innerText.slice(0, 4000),
+              bodyRect: document.body.getBoundingClientRect().toJSON(),
+              rootRect: document.documentElement.getBoundingClientRect().toJSON(),
+              pickerRect: r ? { x: r.x, y: r.y, width: r.width, height: r.height } : null,
+              pickerDisplay: cs?.display,
+              pickerHeight: cs?.height,
+              pickerBackground: cs?.backgroundColor,
+              pickerColor: cs?.color,
+              htmlClass: document.documentElement.className,
+              platform: window.__HELIX_PLATFORM__,
+              stylesheets: [...document.styleSheets].map((sheet) => sheet.href),
+              scripts: [...document.scripts].map((script) => script.src),
+              rootHtml: document.documentElement.outerHTML.slice(0, 8000),
+            };
+          })()`;
+          const result = await send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true });
+          console.log('STATE', JSON.stringify(result.result?.result?.value ?? result, null, 2));
+          const shot = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
+          fs.writeFileSync('cdp-screen.png', Buffer.from(shot.result.data, 'base64'));
+          fs.writeFileSync('cdp-events.json', JSON.stringify(events, null, 2));
+          ws.close();
+          EOF
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Run emulator and inspect WebView
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: true
+          script: |
+            set -x
+            adb install -r helixnotes-x86_64-debug.apk
+            adb shell am start -W -n com.helixnotes.app/.MainActivity
+            sleep 12
+            pid=$(adb shell pidof com.helixnotes.app | tr -d '\r')
+            echo "PID=$pid"
+            adb shell cat /proc/net/unix | grep webview_devtools_remote || true
+            socket=$(adb shell cat /proc/net/unix | grep -o 'webview_devtools_remote_[0-9]*' | head -n 1 | tr -d '\r')
+            test -n "$socket"
+            adb forward tcp:9222 localabstract:$socket
+            curl -s http://127.0.0.1:9222/json > pages.json || true
+            cat pages.json
+            node cdp-inspect.mjs > cdp-state.txt 2>&1 || true
+            cat cdp-state.txt
+            adb shell screencap -p /sdcard/screen2.png
+            adb pull /sdcard/screen2.png screen2.png
+            adb logcat -d > logcat2.txt
+
+      - name: Upload debug output
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-cdp-debug
+          path: |
+            cdp-state.txt
+            cdp-screen.png
+            cdp-events.json
+            pages.json
+            screen2.png
+            logcat2.txt
+          if-no-files-found: warn
+
+      - name: Publish debug output
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload android-noteinfo-bdd46ed cdp-state.txt cdp-screen.png cdp-events.json pages.json screen2.png logcat2.txt --clobber -R "$GITHUB_REPOSITORY" || true
