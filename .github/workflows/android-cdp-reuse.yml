@@ -1,0 +1,105 @@
+name: Android CDP Reuse
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  reuse:
+    name: Reuse debug APK and test viewport
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download previous debug artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: android-cdp-debug
+          run-id: 42364751239
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: List files
+        run: ls -la
+
+      - name: Write CDP inspector
+        run: |
+          cat > cdp-viewport.mjs <<'EOF'
+          import fs from 'node:fs';
+          const pages = await (await fetch('http://127.0.0.1:9222/json')).json();
+          const page = pages.find((p) => p.type === 'page') ?? pages[0];
+          const ws = new WebSocket(page.webSocketDebuggerUrl);
+          await new Promise((resolve, reject) => { ws.onopen = resolve; ws.onerror = reject; });
+          let seq = 0;
+          const waiting = new Map();
+          ws.onmessage = (event) => {
+            const msg = JSON.parse(event.data);
+            if (msg.id) { waiting.get(msg.id)?.(msg); waiting.delete(msg.id); }
+          };
+          const send = (method, params = {}) => new Promise((resolve) => {
+            const id = ++seq;
+            waiting.set(id, resolve);
+            ws.send(JSON.stringify({ id, method, params }));
+          });
+          const evaluate = (expression) => send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true });
+          const shot = async (name) => {
+            const result = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false, fromSurface: true });
+            fs.writeFileSync(name, Buffer.from(result.result.data, 'base64'));
+          };
+          await send('Runtime.enable');
+          await send('Page.enable');
+          console.log('META0', JSON.stringify((await evaluate(`document.querySelector('meta[name="viewport"]')?.content`)).result.result.value));
+          console.log('RECT0', JSON.stringify((await evaluate(`(() => { const r = document.querySelector('.picker-card').getBoundingClientRect(); return { x: r.x, y: r.y, w: r.width, h: r.height, vw: innerWidth, vh: innerHeight, dpr: devicePixelRatio, scale: visualViewport.scale, vvx: visualViewport.offsetLeft, vvy: visualViewport.offsetTop, vvw: visualViewport.width, vvh: visualViewport.height }; })()`)).result.result.value));
+          await shot('viewport-0-before.png');
+          console.log('FIX1', JSON.stringify((await evaluate(`(() => { const m = document.querySelector('meta[name="viewport"]'); m.content = 'width=device-width, initial-scale=1, minimum-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover'; window.dispatchEvent(new Event('resize')); return m.content; })()`)).result.result.value));
+          await new Promise((resolve) => setTimeout(resolve, 1500));
+          console.log('RECT1', JSON.stringify((await evaluate(`(() => { const r = document.querySelector('.picker-card').getBoundingClientRect(); return { x: r.x, y: r.y, w: r.width, h: r.height, vw: innerWidth, vh: innerHeight, scale: visualViewport.scale, vvw: visualViewport.width, vvh: visualViewport.height }; })()`)).result.result.value));
+          await shot('viewport-1-reset.png');
+          console.log('FIX2', JSON.stringify((await evaluate(`(() => { document.documentElement.style.transform = 'translateZ(0)'; document.body.style.transform = 'translateZ(0)'; document.body.offsetHeight; return true; })()`)).result.result.value));
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+          await shot('viewport-2-transform.png');
+          ws.close();
+          EOF
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Run emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: true
+          script: |
+            adb install -r helixnotes-x86_64-debug.apk
+            adb shell am start -W -n com.helixnotes.app/.MainActivity
+            sleep 12
+            pid=$(adb shell pidof com.helixnotes.app | tr -d '\r' | awk '{print $1}')
+            socket=$(adb shell cat /proc/net/unix | tr -d '\r' | grep -o 'webview_devtools_remote_[0-9]*' | head -n 1)
+            if [ -z "$socket" ] && [ -n "$pid" ]; then socket="webview_devtools_remote_$pid"; fi
+            adb forward --remove tcp:9222 || true
+            adb forward tcp:9222 localabstract:"$socket"
+            node cdp-viewport.mjs > viewport-state.txt 2>&1 || true
+            cat viewport-state.txt
+
+      - name: Upload viewport results
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-viewport-test
+          path: |
+            viewport-state.txt
+            viewport-0-before.png
+            viewport-1-reset.png
+            viewport-2-transform.png
+          if-no-files-found: warn
+
+      - name: Publish viewport results
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload android-noteinfo-bdd46ed viewport-state.txt viewport-0-before.png viewport-1-reset.png viewport-2-transform.png --clobber -R "$GITHUB_REPOSITORY" || true
