@@ -160,6 +160,16 @@ jobs:
           });
           const forced = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false, fromSurface: true });
           fs.writeFileSync('cdp-screen-forced.png', Buffer.from(forced.result.data, 'base64'));
+          await send('Runtime.evaluate', {
+            expression: `(() => {
+              document.body.innerHTML = '<h1 style="color:#ff0000;font-size:88px;font-family:sans-serif">HELLO</h1><button style="background:#008000;color:#ffffff;font-size:48px;padding:20px">BUTTON</button>';
+              document.body.style.background = '#ffff00';
+              return document.body.innerText;
+            })()`,
+            returnByValue: true,
+          });
+          const injected = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false, fromSurface: true });
+          fs.writeFileSync('cdp-screen-injected.png', Buffer.from(injected.result.data, 'base64'));
           fs.writeFileSync('cdp-events.json', JSON.stringify(events, null, 2));
           ws.close();
           EOF
@@ -216,14 +226,16 @@ jobs:
             cdp-screen.png
             cdp-screen-view.png
             cdp-screen-forced.png
+            cdp-screen-injected.png
             cdp-events.json
             pages.json
             screen2.png
             logcat2.txt
+            helixnotes-x86_64-debug.apk
           if-no-files-found: warn
 
       - name: Publish debug output
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release upload android-noteinfo-bdd46ed cdp-state.txt cdp-screen.png cdp-screen-view.png cdp-screen-forced.png cdp-events.json pages.json screen2.png logcat2.txt --clobber -R "$GITHUB_REPOSITORY" || true
+          gh release upload android-noteinfo-bdd46ed cdp-state.txt cdp-screen.png cdp-screen-view.png cdp-screen-forced.png cdp-screen-injected.png cdp-events.json pages.json screen2.png logcat2.txt --clobber -R "$GITHUB_REPOSITORY" || true
