@@ -191,20 +191,25 @@ async function phaseA() {
 		log('system settings opened:', openedSettings);
 		if (!openedSettings) fail('Grant File Access did not open the system permission screen');
 
-		// Leave the settings screen and grant the permission the way a user would.
+		// Leave the settings screen, grant the permission the way a user would,
+		// then reopen the app so it re-checks storage access on resume.
 		adbSoft('shell input keyevent KEYCODE_BACK');
 		await sleep(1000);
 		adbSoft(`shell appops set ${PKG} MANAGE_EXTERNAL_STORAGE allow`);
-		adbSoft(`shell am start -W -n ${PKG}/.MainActivity`);
-		await sleep(3000);
-
-		const ungated = await waitFor(
-			'permission-aware vault picker',
-			cdp,
-			`document.querySelector('.btn-primary')?.textContent?.trim() === 'Get Started'`,
-			30000,
-		);
-		if (!ungated) fail('vault picker still gated after granting storage access');
+		cdp.close();
+		await launchApp();
+		const reopened = await connect();
+		try {
+			const ungated = await waitFor(
+				'permission-aware vault picker',
+				reopened,
+				`document.querySelector('.btn-primary')?.textContent?.trim() === 'Get Started'`,
+				30000,
+			);
+			if (!ungated) fail('vault picker still gated after granting storage access');
+		} finally {
+			reopened.close();
+		}
 	} finally {
 		cdp.close();
 	}
