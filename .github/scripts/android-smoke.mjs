@@ -344,7 +344,7 @@ async function phaseB() {
 		const infoOpen = await waitFor(
 			'note info panel',
 			cdp,
-			`!!document.querySelector('.info-panel') && document.querySelector('.info-panel').innerText.includes('Note Info')`,
+			`!!document.querySelector('.info-panel') && /note info/i.test(document.querySelector('.info-panel').innerText)`,
 			15000,
 		);
 		if (infoOpen) {
