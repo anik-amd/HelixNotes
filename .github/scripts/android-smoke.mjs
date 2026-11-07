@@ -317,6 +317,40 @@ async function phaseB() {
 			if (!title) fail('new note opened without a title');
 		}
 
+		// 4b. Type into the new note and let the autosave run. The first save of a
+		// new note must not report a conflict (regression: it used to compare
+		// against a synthesized empty baseline instead of the created file).
+		const focused = await cdp.evaluate(`(() => {
+			const body = document.querySelector('.ProseMirror');
+			if (!body) return false;
+			body.focus();
+			return true;
+		})()`);
+		log('focused new note body:', focused);
+		if (!focused) fail('could not focus the new note body');
+		await cdp.send('Input.insertText', { text: 'Save check body text.' });
+
+		// The mobile editor must reserve room for the keyboard and formatting bar.
+		const bottomReserve = await cdp.evaluate(`(() => {
+			const wrapper = document.querySelector('.editor-body-wrapper');
+			return wrapper ? parseFloat(getComputedStyle(wrapper).paddingBottom) : null;
+		})()`);
+		log('editor bottom reserve:', bottomReserve);
+		if (!(bottomReserve >= 40)) fail('editor body does not reserve space for the formatting bar');
+
+		await sleep(7000);
+		const saveState = await cdp.evaluate(`(() => ({
+			error: document.querySelector('.save-error')?.innerText?.replace(/\\s+/g, ' ').slice(0, 240) ?? null,
+			body: document.querySelector('.ProseMirror')?.innerText ?? '',
+		}))()`);
+		log('save state:', JSON.stringify(saveState));
+		if (saveState.error) fail(`first save of a new note reported an error: ${saveState.error}`);
+		if (!saveState.body.includes('Save check body text.')) fail('typed body text was lost');
+
+		const onDisk = adbSoft('shell grep -rl "Save check body text." /sdcard/Documents/HelixNotes').trim();
+		log('saved note on disk:', JSON.stringify(onDisk));
+		if (!onDisk) fail('autosave did not write the typed body to disk');
+
 		// 5. Note Info: inline button, otherwise through the overflow menu.
 		const inlineInfo = await cdp.evaluate(`!!document.querySelector('.mobile-header-actions [aria-label="Note info"]')`);
 		log('note info inline:', inlineInfo);

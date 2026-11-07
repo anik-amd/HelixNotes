@@ -90,7 +90,7 @@ jobs:
           apk=$(find src-tauri/gen/android/app/build/outputs/apk -name '*release*.apk' | head -n 1)
           test -n "$apk"
           echo "Found $apk"
-          cp "$apk" "HelixNotes_1.3.6_noteinfo_android_arm64.apk"
+          cp "$apk" "HelixNotes_1.3.6_noteinfo2_android_arm64.apk"
 
       - name: Verify APK manifest
         run: |
@@ -98,9 +98,9 @@ jobs:
           echo "aapt2: $aapt2"
           {
             echo "=== permissions ==="
-            "$aapt2" dump permissions HelixNotes_1.3.6_noteinfo_android_arm64.apk
+            "$aapt2" dump permissions HelixNotes_1.3.6_noteinfo2_android_arm64.apk
             echo "=== badging ==="
-            "$aapt2" dump badging HelixNotes_1.3.6_noteinfo_android_arm64.apk | grep -E "^package:|sdkVersion|targetSdkVersion|application-label"
+            "$aapt2" dump badging HelixNotes_1.3.6_noteinfo2_android_arm64.apk | grep -E "^package:|sdkVersion|targetSdkVersion|application-label"
           } | tee apk-permissions.txt
           grep -q 'android.permission.MANAGE_EXTERNAL_STORAGE' apk-permissions.txt
           grep -q 'android.permission.INTERNET' apk-permissions.txt
@@ -111,23 +111,27 @@ jobs:
         with:
           name: HelixNotes-noteinfo-android-arm64
           path: |
-            HelixNotes_1.3.6_noteinfo_android_arm64.apk
+            HelixNotes_1.3.6_noteinfo2_android_arm64.apk
             apk-permissions.txt
           if-no-files-found: error
 
       - name: Publish test APK
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: android-noteinfo-136
+          tag_name: android-noteinfo-136b
           name: HelixNotes Note Info Android test build
           body: |
-            Signed arm64 APK: official v1.3.6 plus the mobile Note Info button and
-            responsive header overflow menu. Built from the v1.3.6 tag so the rest of
-            the app matches the released version.
+            Signed arm64 APK: official v1.3.6 plus three frontend fixes.
+
+            - Note Info button in the mobile editor header (overflow menu when narrow)
+            - The typing caret stays above the keyboard and the formatting bar
+            - New notes no longer report a false save conflict on their first save
+
+            Base: v1.3.6 (e1f1ef0). No backend, vault, or sync behaviour changed.
 
             Base: v1.3.6 (e1f1ef0)
           files: |
-            HelixNotes_1.3.6_noteinfo_android_arm64.apk
+            HelixNotes_1.3.6_noteinfo2_android_arm64.apk
             apk-permissions.txt
           overwrite_files: true
           prerelease: true
