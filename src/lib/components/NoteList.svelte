@@ -633,10 +633,15 @@
 			if (!navigationIsCurrent(token)) return;
 			if (!(await onBeforeNoteSwitch())) return;
 			if (!navigationIsCurrent(token)) return;
-			$activeNote = { path: entry.path, meta: entry.meta, content: '\n', raw: '' };
+			// The first save must use the exact file created on disk, not wait for
+			// a watcher echo: the editor's expected raw has to match the file byte for
+			// byte or the first save reports a false conflict.
+			const content = await readNote(ownerVault!, entry.path);
+			if (!navigationIsCurrent(token)) return;
+			$activeNote = content;
 			$activeNotePath = entry.path;
 			$editorDirty = false;
-			onNoteSelected(entry.path, '\n');
+			onNoteSelected(entry.path, content.content);
 			onNoteCreated(token);
 		} catch (e) {
 			console.error('Failed to create note:', e);
