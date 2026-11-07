@@ -221,10 +221,10 @@
 			{/if}
 
 			{#if isAndroid && !hasPermission}
-				<button class="btn-permission" onclick={requestPermission}>
-					Grant File Access
-				</button>
-				<p class="permission-hint">Required to access Documents, Downloads, and other shared folders.</p>
+				<p class="permission-hint">
+					HelixNotes needs "All files access" to read and write notes in Documents. Tap the button below,
+					then turn on All files access for HelixNotes.
+				</p>
 			{/if}
 
 			{#if isAndroid}
@@ -265,9 +265,11 @@
 			<div class="error">{error}</div>
 		{/if}
 
-		<button class="btn-primary" onclick={pickFolder} disabled={loading}>
+		<button class="btn-primary" onclick={isAndroid && !hasPermission ? requestPermission : pickFolder} disabled={loading}>
 			{#if loading}
 				Opening...
+			{:else if isAndroid && !hasPermission}
+				Grant File Access
 			{:else if isIOS}
 				Use Local Folder
 			{:else if isMobile}
@@ -642,24 +644,6 @@
 		margin-top: 6px;
 		opacity: 0.7;
 		word-break: break-all;
-	}
-
-	.btn-permission {
-		width: 100%;
-		padding: 12px 20px;
-		background: var(--accent);
-		color: white;
-		border: none;
-		border-radius: 10px;
-		font-size: 15px;
-		font-weight: 600;
-		cursor: pointer;
-		margin-bottom: 6px;
-		transition: background 0.15s;
-	}
-
-	.btn-permission:hover {
-		background: var(--accent-hover);
 	}
 
 	.permission-hint {

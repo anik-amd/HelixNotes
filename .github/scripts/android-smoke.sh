@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Boots the app on the emulator, seeds a vault, then drives the UI over CDP.
+# Phase A checks the storage-permission gate, phase B checks the note flow.
 set -u
 
 echo "=== adb root ==="
@@ -7,39 +8,31 @@ adb root || true
 adb wait-for-device
 
 echo "=== install ==="
+adb uninstall com.helixnotes.app || true
 adb install -r helixnotes-x86_64.apk
 
+echo "=== apk manifest permissions ==="
+aapt2_bin=$(ls "$ANDROID_HOME"/build-tools/*/aapt2 2>/dev/null | sort -V | tail -n 1)
+if [ -n "$aapt2_bin" ]; then
+  "$aapt2_bin" dump permissions helixnotes-x86_64.apk || true
+  "$aapt2_bin" dump badging helixnotes-x86_64.apk | grep -E "^package:|targetSdkVersion" || true
+else
+  echo "aapt2 not found"
+fi
+
 echo "=== seed vault ==="
-adb shell appops set com.helixnotes.app MANAGE_EXTERNAL_STORAGE allow
 adb shell mkdir -p /sdcard/Documents/HelixNotes
 printf '# Sample Note One\n\nHello from the seeded vault.\n' > sample-one.md
 printf '# Sample Note Two\n\nSecond seeded note.\n' > sample-two.md
 adb push sample-one.md "/sdcard/Documents/HelixNotes/Sample Note One.md"
 adb push sample-two.md "/sdcard/Documents/HelixNotes/Sample Note Two.md"
 
-echo "=== launch on a narrow screen ==="
+echo "=== narrow screen ==="
 adb shell wm size 720x1600
 adb shell wm density 320
-adb shell am start -W -n com.helixnotes.app/.MainActivity
-sleep 10
 
-echo "=== devtools socket ==="
-adb shell cat /proc/net/unix | grep -i devtools | head -n 5 || true
-sock=""
-for _ in $(seq 1 40); do
-  sock=$(adb shell cat /proc/net/unix | grep -o 'webview_devtools_remote_[0-9]*' | head -n 1 | tr -d '\r')
-  [ -n "$sock" ] && break
-  sleep 1
-done
-if [ -z "$sock" ]; then
-  pid=$(adb shell pidof com.helixnotes.app | tr -d '\r')
-  echo "app pid: $pid"
-  sock="webview_devtools_remote_$pid"
-fi
-echo "devtools socket: $sock"
-adb forward tcp:9222 "localabstract:$sock" || true
-curl -s http://127.0.0.1:9222/json/version || true
-echo
+echo "=== installed package permissions ==="
+adb shell dumpsys package com.helixnotes.app | grep -iE "MANAGE_EXTERNAL_STORAGE|READ_EXTERNAL|WRITE_EXTERNAL|INTERNET" | head -n 20 || true
 
 echo "=== smoke test ==="
 node .github/scripts/android-smoke.mjs > smoke.txt 2>&1

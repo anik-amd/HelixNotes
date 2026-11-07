@@ -56,13 +56,21 @@ jobs:
           echo "sdk.dir=$ANDROID_HOME" > src-tauri/gen/android/local.properties
 
       - name: Create test signing key
+        env:
+          ANDROID_TEST_KEYSTORE_B64: ${{ secrets.ANDROID_TEST_KEYSTORE_B64 }}
         run: |
-          keytool -genkeypair -v \
-            -keystore "$RUNNER_TEMP/helixnotes-test.jks" \
-            -alias helixnotes \
-            -keyalg RSA -keysize 2048 -validity 10000 \
-            -storepass helixnotes -keypass helixnotes \
-            -dname "CN=HelixNotes Test, OU=Test, O=HelixNotes, L=Test, ST=Test, C=US"
+          if [ -n "$ANDROID_TEST_KEYSTORE_B64" ]; then
+            printf '%s' "$ANDROID_TEST_KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/helixnotes-test.jks"
+            echo "Using the stable test keystore from repository secrets."
+          else
+            keytool -genkeypair -v \
+              -keystore "$RUNNER_TEMP/helixnotes-test.jks" \
+              -alias helixnotes \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -storepass helixnotes -keypass helixnotes \
+              -dname "CN=HelixNotes Test, OU=Test, O=HelixNotes, L=Test, ST=Test, C=US"
+            echo "WARNING: no stable test keystore secret; this APK cannot replace the previous test build."
+          fi
           cat > src-tauri/gen/android/keystore.properties <<EOF
           storeFile=$RUNNER_TEMP/helixnotes-test.jks
           storePassword=helixnotes

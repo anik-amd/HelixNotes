@@ -56,13 +56,21 @@ jobs:
           echo "sdk.dir=$ANDROID_HOME" > src-tauri/gen/android/local.properties
 
       - name: Create test signing key
+        env:
+          ANDROID_TEST_KEYSTORE_B64: ${{ secrets.ANDROID_TEST_KEYSTORE_B64 }}
         run: |
-          keytool -genkeypair -v \
-            -keystore "$RUNNER_TEMP/helixnotes-test.jks" \
-            -alias helixnotes \
-            -keyalg RSA -keysize 2048 -validity 10000 \
-            -storepass helixnotes -keypass helixnotes \
-            -dname "CN=HelixNotes Test, OU=Test, O=HelixNotes, L=Test, ST=Test, C=US"
+          if [ -n "$ANDROID_TEST_KEYSTORE_B64" ]; then
+            printf '%s' "$ANDROID_TEST_KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/helixnotes-test.jks"
+            echo "Using the stable test keystore from repository secrets."
+          else
+            keytool -genkeypair -v \
+              -keystore "$RUNNER_TEMP/helixnotes-test.jks" \
+              -alias helixnotes \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -storepass helixnotes -keypass helixnotes \
+              -dname "CN=HelixNotes Test, OU=Test, O=HelixNotes, L=Test, ST=Test, C=US"
+            echo "WARNING: no stable test keystore secret; this APK cannot replace the previous test build."
+          fi
           cat > src-tauri/gen/android/keystore.properties <<EOF
           storeFile=$RUNNER_TEMP/helixnotes-test.jks
           storePassword=helixnotes
@@ -84,11 +92,27 @@ jobs:
           echo "Found $apk"
           cp "$apk" "HelixNotes_1.3.6_noteinfo_android_arm64.apk"
 
+      - name: Verify APK manifest
+        run: |
+          aapt2=$(ls "$ANDROID_HOME"/build-tools/*/aapt2 | sort -V | tail -n 1)
+          echo "aapt2: $aapt2"
+          {
+            echo "=== permissions ==="
+            "$aapt2" dump permissions HelixNotes_1.3.6_noteinfo_android_arm64.apk
+            echo "=== badging ==="
+            "$aapt2" dump badging HelixNotes_1.3.6_noteinfo_android_arm64.apk | grep -E "^package:|sdkVersion|targetSdkVersion|application-label"
+          } | tee apk-permissions.txt
+          grep -q 'android.permission.MANAGE_EXTERNAL_STORAGE' apk-permissions.txt
+          grep -q 'android.permission.INTERNET' apk-permissions.txt
+          echo "APK declares the storage permissions."
+
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
           name: HelixNotes-noteinfo-android-arm64
-          path: HelixNotes_1.3.6_noteinfo_android_arm64.apk
+          path: |
+            HelixNotes_1.3.6_noteinfo_android_arm64.apk
+            apk-permissions.txt
           if-no-files-found: error
 
       - name: Publish test APK
@@ -102,7 +126,9 @@ jobs:
             the app matches the released version.
 
             Base: v1.3.6 (e1f1ef0)
-          files: HelixNotes_1.3.6_noteinfo_android_arm64.apk
+          files: |
+            HelixNotes_1.3.6_noteinfo_android_arm64.apk
+            apk-permissions.txt
           overwrite_files: true
           prerelease: true
           token: ${{ secrets.GITHUB_TOKEN }}
