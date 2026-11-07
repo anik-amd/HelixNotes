@@ -86,6 +86,7 @@
 	import { normalizeStartupView, resolveStartupTarget } from '$lib/utils/startup-view';
 	import { isCurrentVaultEvent, sameNoteTags, updateNoteList } from '$lib/utils/note-list-updates';
 	import { beginNoteNavigation, isCurrentNoteNavigation, cancelNoteNavigation } from '$lib/utils/note-navigation';
+import { visibleMobileHeaderActionCount } from '$lib/utils/mobile-header-actions';
 	import { isPathInDirectory, isTrashedNote } from '$lib/utils/paths';
 	import { get } from 'svelte/store';
 	import type { VaultState, FileEvent, NotebookEntry, NoteEntry, TaskItem, SearchResult } from '$lib/types';
@@ -224,6 +225,267 @@
 	// Mobile editor header helpers
 	let noteRelativePath = $derived($activeNotePath && $appConfig?.active_vault ? $activeNotePath.replace($appConfig.active_vault + '/', '') : '');
 	let isQuickAccess = $derived(noteRelativePath ? $quickAccessPaths.includes(noteRelativePath) : false);
+
+	// Note actions in the mobile header collapse into a three-dot menu when the
+	// header runs out of room (phone portrait, split screen, or many enabled actions).
+	const MOBILE_HEADER_TITLE_MIN_WIDTH = 96;
+	const mobileHeaderIcons = {
+		edit: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>',
+		view: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>',
+		find: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>',
+		pin: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path d="M9 2h6l-1 7h4l-2 4H8l-2-4h4L9 2z"/></svg>',
+		quickAccess: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" /></svg>',
+		outline: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="6" x2="20" y2="6"/><line x1="8" y1="12" x2="20" y2="12"/><line x1="8" y1="18" x2="20" y2="18"/><circle cx="4" cy="12" r="1" fill="currentColor"/><circle cx="4" cy="18" r="1" fill="currentColor"/></svg>',
+		history: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>',
+		info: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="8" stroke-width="3" stroke-linecap="round"/><line x1="12" y1="12" x2="12" y2="16"/></svg>',
+		graph: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="3"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="18" r="3"/><line x1="8.5" y1="7.5" x2="15.5" y2="16.5"/><line x1="15.5" y1="7.5" x2="8.5" y2="16.5"/></svg>',
+		ai: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8V4l-2-2"/><rect x="4" y="8" width="16" height="12" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M9 13v2"/><path d="M15 13v2"/></svg>',
+		sync: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0115-6.7L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 01-15 6.7L3 16"/></svg>',
+		source: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6" /><polyline points="8 6 2 12 8 18" /></svg>',
+	} as const;
+
+	interface MobileHeaderAction {
+		id: string;
+		label: string;
+		title: string;
+		active?: boolean;
+		disabled?: boolean;
+		icon: string;
+		run: () => void | Promise<void>;
+	}
+
+	let infoOpen = $state(false);
+	let mobileHeaderEl = $state<HTMLDivElement | null>(null);
+	let mobileActionsEl = $state<HTMLDivElement | null>(null);
+	let mobileActionsWidth = $state(-1);
+	let mobileActionMenu = $state(false);
+	let mobileActionMenuEl = $state<HTMLDivElement | null>(null);
+	let mobileActionMenuTrigger = $state<HTMLButtonElement | null>(null);
+	const mobileActionMenuId = 'mobile-note-actions-menu';
+
+	async function toggleQuickAccess() {
+		if (!noteRelativePath || !ownerVault) return;
+		try {
+			if (isQuickAccess) {
+				await removeQuickAccess(ownerVault, noteRelativePath);
+			} else {
+				await addQuickAccess(ownerVault, noteRelativePath);
+			}
+			if (!ownerIsCurrent()) return;
+			const qaNotes = await getQuickAccess(ownerVault);
+			if (ownerIsCurrent()) $quickAccessPaths = qaNotes.map(n => n.relative_path);
+		} catch (e) {
+			console.error('Quick access toggle failed:', e);
+		}
+	}
+
+	let mobileEditorActions = $derived.by<MobileHeaderAction[]>(() => {
+		if (!($mobileView === 'editor' || (tabletLayout && $activeNotePath))) return [];
+		// Reading editorDirty refreshes the pin state after an in-place note edit.
+		void $editorDirty;
+		const actions: MobileHeaderAction[] = [
+			{
+				id: 'edit',
+				label: $readOnly ? 'Switch to edit mode' : 'Switch to view mode',
+				title: $readOnly ? 'Edit' : 'View',
+				active: $readOnly,
+				disabled: isTrashedNote($activeNotePath, ownerVault),
+				icon: $readOnly ? mobileHeaderIcons.view : mobileHeaderIcons.edit,
+				run: () => { $readOnly = !$readOnly; },
+			},
+			{
+				id: 'find',
+				label: 'Find in note',
+				title: 'Find in note',
+				icon: mobileHeaderIcons.find,
+				run: () => editor?.openNoteSearch(),
+			},
+			{
+				id: 'pin',
+				label: $activeNote?.meta.pinned ? 'Unpin note' : 'Pin note',
+				title: $activeNote?.meta.pinned ? 'Unpin note' : 'Pin note',
+				active: $activeNote?.meta.pinned,
+				icon: mobileHeaderIcons.pin,
+				run: () => {
+					if (!$activeNote) return;
+					$activeNote.meta.pinned = !$activeNote.meta.pinned;
+					editor?.markEdited();
+				},
+			},
+			{
+				id: 'quick-access',
+				label: isQuickAccess ? 'Remove from Quick Access' : 'Add to Quick Access',
+				title: 'Quick Access',
+				active: isQuickAccess,
+				icon: mobileHeaderIcons.quickAccess,
+				run: toggleQuickAccess,
+			},
+			{
+				id: 'outline',
+				label: 'Outline',
+				title: 'Outline',
+				active: outlineOpen,
+				icon: mobileHeaderIcons.outline,
+				run: () => editor?.toggleOutlinePanel(),
+			},
+			{
+				id: 'history',
+				label: 'Version history',
+				title: 'History',
+				icon: mobileHeaderIcons.history,
+				run: () => editor?.toggleHistoryPanel(),
+			},
+			{
+				id: 'info',
+				label: 'Note info',
+				title: 'Note info',
+				active: infoOpen,
+				icon: mobileHeaderIcons.info,
+				run: () => editor?.toggleInfoPanel(),
+			},
+		];
+		if ($appConfig?.enable_wiki_links) {
+			actions.push({
+				id: 'graph',
+				label: 'Graph view',
+				title: 'Graph View',
+				icon: mobileHeaderIcons.graph,
+				run: () => editor?.toggleGraphView(),
+			});
+		}
+		if ($appConfig?.ai_provider) {
+			actions.push({
+				id: 'ai',
+				label: 'AI actions',
+				title: 'AI Actions',
+				icon: mobileHeaderIcons.ai,
+				run: () => editor?.triggerAiMenu(),
+			});
+		}
+		if (activeVaultConfig($appConfig)?.sync_provider === 'webdav') {
+			actions.push({
+				id: 'sync',
+				label: 'Sync now',
+				title: $syncState.error ? `Sync error: ${$syncState.error}` : ($syncState.running ? 'Syncing...' : 'Sync now'),
+				active: $syncState.running,
+				disabled: $syncState.running,
+				icon: mobileHeaderIcons.sync,
+				run: () => triggerSyncNow(),
+			});
+		}
+		actions.push({
+			id: 'source',
+			label: $sourceMode ? 'Rich editor' : 'Source mode',
+			title: $sourceMode ? 'Rich Editor' : 'Source Mode',
+			active: $sourceMode,
+			icon: mobileHeaderIcons.source,
+			run: () => { $sourceMode = !$sourceMode; },
+		});
+		return actions;
+	});
+
+	let visibleMobileEditorActions = $derived(
+		mobileActionsWidth < 0
+			? mobileEditorActions
+			: mobileEditorActions.slice(0, visibleMobileHeaderActionCount({
+				availableWidth: mobileActionsWidth,
+				actionCount: mobileEditorActions.length,
+			}))
+	);
+	let overflowMobileEditorActions = $derived(
+		mobileActionsWidth < 0
+			? []
+			: mobileEditorActions.slice(visibleMobileEditorActions.length)
+	);
+
+	function measureMobileHeader() {
+		const header = mobileHeaderEl;
+		const actions = mobileActionsEl;
+		if (!header || !actions) return;
+		const headerStyle = getComputedStyle(header);
+		const padding = parseFloat(headerStyle.paddingLeft) + parseFloat(headerStyle.paddingRight);
+		const gap = parseFloat(headerStyle.gap) || 0;
+		let used = 0;
+		let visibleChildren = 0;
+		let titleReserve = 0;
+		for (const child of Array.from(header.children)) {
+			if (child === actions) {
+				visibleChildren += 1;
+				continue;
+			}
+			const el = child as HTMLElement;
+			const childStyle = getComputedStyle(el);
+			if (childStyle.position === 'absolute' || childStyle.position === 'fixed' || childStyle.display === 'none') continue;
+			visibleChildren += 1;
+			if (el.classList.contains('mobile-header-title')) {
+				titleReserve = MOBILE_HEADER_TITLE_MIN_WIDTH;
+				continue;
+			}
+			used += el.offsetWidth;
+		}
+		const gaps = Math.max(0, visibleChildren - 1) * gap;
+		mobileActionsWidth = Math.max(0, header.clientWidth - used - titleReserve - gaps - padding);
+	}
+
+	$effect(() => {
+		// Re-measure when the header contents or the layout mode change.
+		void isMobile;
+		void tabletLayout;
+		void $mobileView;
+		void $activeNotePath;
+		void mobileEditorActions.length;
+		const header = mobileHeaderEl;
+		if (!isMobile || !header) return;
+		measureMobileHeader();
+		const observer = new ResizeObserver(() => measureMobileHeader());
+		observer.observe(header);
+		for (const child of Array.from(header.children)) {
+			if (child !== mobileActionsEl) observer.observe(child);
+		}
+		return () => observer.disconnect();
+	});
+
+	async function toggleMobileActionMenu() {
+		if (mobileActionMenu) {
+			closeMobileActionMenu();
+			return;
+		}
+		mobileActionMenu = true;
+		await tick();
+		mobileActionMenuEl?.querySelector<HTMLButtonElement>('.mobile-header-menu-item')?.focus({ preventScroll: true });
+	}
+
+	function closeMobileActionMenu(restoreFocus = true) {
+		if (!mobileActionMenu) return;
+		mobileActionMenu = false;
+		if (restoreFocus) mobileActionMenuTrigger?.focus({ preventScroll: true });
+	}
+
+	function runMobileEditorAction(action: MobileHeaderAction) {
+		closeMobileActionMenu(false);
+		void action.run();
+	}
+
+	function onMobileActionMenuKeydown(event: KeyboardEvent) {
+		if (event.key !== 'Escape') return;
+		event.preventDefault();
+		event.stopPropagation();
+		closeMobileActionMenu();
+	}
+
+	function handleInfoChange(open: boolean) {
+		infoOpen = open;
+	}
+
+	$effect(() => {
+		// The menu belongs to one view; close it when that view changes.
+		void $mobileView;
+		void tabletLayout;
+		void $activeNotePath;
+		untrack(() => {
+			if (mobileActionMenu) closeMobileActionMenu(false);
+		});
+	});
 	let backupInterval: ReturnType<typeof setInterval> | null = null;
 	let syncInterval: ReturnType<typeof setInterval> | null = null;
 	let unlistenSync: Array<() => void> = [];
@@ -1181,7 +1443,7 @@
 	<!-- ═══ MOBILE LAYOUT ═══ -->
 	<div class="mobile-shell">
 		<!-- Mobile Header -->
-		<div class="mobile-header">
+		<div class="mobile-header" bind:this={mobileHeaderEl}>
 			{#if tabletLayout}
 				<button class="mobile-header-btn" class:active={!tabletNavHidden} onclick={() => setTabletNavHidden(!tabletNavHidden)}
 					title={tabletNavHidden ? 'Show side panel' : 'Hide side panel'} aria-label={tabletNavHidden ? 'Show side panel' : 'Hide side panel'} aria-pressed={!tabletNavHidden}>
@@ -1223,80 +1485,39 @@
 					</button>
 				{/if}
 			{/if}
-			<div class="mobile-header-actions">
+			<div class="mobile-header-actions" bind:this={mobileActionsEl}>
 				{#if $mobileView === 'editor' || (tabletLayout && $activeNotePath)}
-					<button class="mobile-header-btn" class:active={$readOnly} disabled={isTrashedNote($activeNotePath, ownerVault)} onclick={() => ($readOnly = !$readOnly)} title={$readOnly ? 'Edit' : 'View'}>
-						<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-							{#if $readOnly}
-								<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
-								<circle cx="12" cy="12" r="3" />
-							{:else}
-								<path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7" />
-								<path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z" />
-							{/if}
-						</svg>
-					</button>
-					<button class="mobile-header-btn" onclick={() => editor?.openNoteSearch()} title="Find in note">
-						<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-							<circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
-						</svg>
-					</button>
-					<button class="mobile-header-btn" class:active={$activeNote?.meta.pinned} onclick={() => { if ($activeNote) { $activeNote.meta.pinned = !$activeNote.meta.pinned; editor?.markEdited(); } }} title="Pin">
-						<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-							<path d="M12 17v5"/><path d="M9 2h6l-1 7h4l-2 4H8l-2-4h4L9 2z"/>
-						</svg>
-					</button>
-					<button class="mobile-header-btn" class:active={isQuickAccess} onclick={async () => {
-						if (!noteRelativePath) return;
-						try {
-							if (isQuickAccess) { await removeQuickAccess(ownerVault!, noteRelativePath); } else { await addQuickAccess(ownerVault!, noteRelativePath); }
-							if (!ownerIsCurrent()) return;
-							const qaNotes = await getQuickAccess(ownerVault!);
-							if (ownerIsCurrent()) $quickAccessPaths = qaNotes.map(n => n.relative_path);
-						} catch (e) { console.error('Quick access toggle failed:', e); }
-					}} title="Quick Access">
-						<svg width="18" height="18" viewBox="0 0 24 24" fill={isQuickAccess ? 'currentColor' : 'none'} stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-							<polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
-						</svg>
-					</button>
-					<button class="mobile-header-btn" class:active={outlineOpen} onclick={() => editor?.toggleOutlinePanel()}
-						title="Outline" aria-label="Outline" aria-expanded={outlineOpen} aria-controls={outlinePanelId || undefined}>
-						<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-							<line x1="4" y1="6" x2="20" y2="6"/><line x1="8" y1="12" x2="20" y2="12"/><line x1="8" y1="18" x2="20" y2="18"/><circle cx="4" cy="12" r="1" fill="currentColor"/><circle cx="4" cy="18" r="1" fill="currentColor"/>
-						</svg>
-					</button>
-					<button class="mobile-header-btn" onclick={() => editor?.toggleHistoryPanel()} title="History">
-						<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-							<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
-						</svg>
-					</button>
-					{#if $appConfig?.enable_wiki_links}
-					<button class="mobile-header-btn" onclick={() => editor?.toggleGraphView()} title="Graph View">
-						<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-							<circle cx="6" cy="6" r="3"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="18" r="3"/>
-							<line x1="8.5" y1="7.5" x2="15.5" y2="16.5"/><line x1="15.5" y1="7.5" x2="8.5" y2="16.5"/>
-						</svg>
-					</button>
+					{#each visibleMobileEditorActions as action (action.id)}
+						<button
+							class="mobile-header-btn"
+							class:active={action.active}
+							disabled={action.disabled}
+							onclick={() => void action.run()}
+							title={action.title}
+							aria-label={action.label}
+							aria-expanded={action.id === 'outline' ? outlineOpen : undefined}
+							aria-controls={action.id === 'outline' ? (outlinePanelId || undefined) : undefined}
+						>
+							<span class="mobile-header-btn-icon" class:sync-spin={action.id === 'sync' && $syncState.running}>{@html action.icon}</span>
+						</button>
+					{/each}
+					{#if overflowMobileEditorActions.length > 0}
+						<button
+							class="mobile-header-btn"
+							class:active={mobileActionMenu}
+							onclick={toggleMobileActionMenu}
+							title="More actions"
+							aria-label="More actions"
+							aria-haspopup="menu"
+							aria-expanded={mobileActionMenu}
+							aria-controls={mobileActionMenu ? mobileActionMenuId : undefined}
+							bind:this={mobileActionMenuTrigger}
+						>
+							<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+								<circle cx="12" cy="5" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="12" cy="19" r="1.7"/>
+							</svg>
+						</button>
 					{/if}
-					{#if $appConfig?.ai_provider}
-					<button class="mobile-header-btn" onclick={() => editor?.triggerAiMenu()} title="AI Actions">
-						<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-							<path d="M12 8V4l-2-2"/><rect x="4" y="8" width="16" height="12" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M9 13v2"/><path d="M15 13v2"/>
-						</svg>
-					</button>
-					{/if}
-					{#if activeVaultConfig($appConfig)?.sync_provider === 'webdav'}
-					<button class="mobile-header-btn" class:active={$syncState.running} onclick={triggerSyncNow} disabled={$syncState.running} title={$syncState.error ? `Sync error: ${$syncState.error}` : ($syncState.running ? 'Syncing...' : 'Sync now')}>
-						<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class:sync-spin={$syncState.running}>
-							<path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0115-6.7L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 01-15 6.7L3 16"/>
-						</svg>
-					</button>
-					{/if}
-					<button class="mobile-header-btn" class:active={$sourceMode} onclick={() => ($sourceMode = !$sourceMode)} title={$sourceMode ? 'Rich Editor' : 'Source Mode'}>
-						<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-							<polyline points="16 18 22 12 16 6" /><polyline points="8 6 2 12 8 18" />
-						</svg>
-					</button>
 				{/if}
 				{#if tabletLayout || $mobileView !== 'editor'}
 					<button class="mobile-header-btn" onclick={() => ($showSearch = true)} title="Search">
@@ -1328,6 +1549,34 @@
 					</button>
 				{/if}
 			</div>
+			{#if mobileActionMenu && overflowMobileEditorActions.length > 0}
+				<button type="button" class="mobile-header-menu-backdrop" tabindex="-1" aria-label="Close menu" onclick={() => closeMobileActionMenu()}></button>
+				<div
+					class="mobile-header-menu"
+					id={mobileActionMenuId}
+					role="menu"
+					tabindex="-1"
+					aria-label="More note actions"
+					bind:this={mobileActionMenuEl}
+					onkeydown={onMobileActionMenuKeydown}
+				>
+					{#each overflowMobileEditorActions as action (action.id)}
+						<button
+							type="button"
+							class="mobile-header-menu-item"
+							class:active={action.active}
+							disabled={action.disabled}
+							role="menuitem"
+							aria-expanded={action.id === 'outline' ? outlineOpen : undefined}
+							aria-controls={action.id === 'outline' ? (outlinePanelId || undefined) : undefined}
+							onclick={() => runMobileEditorAction(action)}
+						>
+							<span class="mobile-header-menu-icon">{@html action.icon}</span>
+							<span class="mobile-header-menu-label">{action.label}</span>
+						</button>
+					{/each}
+				</div>
+			{/if}
 		</div>
 
 		<!-- Mobile Content -->
@@ -1339,7 +1588,7 @@
 				<NoteList bind:this={noteList} onNoteSelected={handleNoteSelected} onBeforeNoteSwitch={() => editor?.flushSave() ?? Promise.resolve(true)} onBeforeNoteDuplicate={() => editor?.forceSave() ?? Promise.resolve(true)} onBeforePathMutation={() => editor?.beginPathMutation() ?? Promise.resolve(() => {})} onPathsMoved={handlePathsMoved} onUpdateActiveNote={updateActiveNoteMetadata} onTagsChanged={handleTagsChanged} onRefreshTags={() => { if (!isMobile) void sidebar?.refreshTags(); }} onNoteMoved={() => sidebar?.refresh()} onNoteCreated={(token) => { editor?.focusTitle(token); }} onToggleTask={toggleTask} onSetTaskPriority={changeTaskPriority} onSetTaskDue={changeTaskDue} />
 			</div>
 			<div class="mobile-panel mobile-editor-panel" class:active={$mobileView === 'editor' || tabletLayout}>
-				<Editor bind:this={editor} onMoveToTrash={trashOpenNote} onOutlineChange={handleOutlineChange} onShowTag={showTagNotes} />
+				<Editor bind:this={editor} onMoveToTrash={trashOpenNote} onOutlineChange={handleOutlineChange} onShowTag={showTagNotes} onInfoChange={handleInfoChange} />
 			</div>
 		</div>
 
@@ -1590,6 +1839,8 @@
 	}
 
 	.mobile-header {
+		position: relative;
+		z-index: 20;
 		display: flex;
 		align-items: center;
 		height: 52px;
@@ -1659,12 +1910,95 @@
 		height: 16px;
 	}
 
+	.mobile-header-btn-icon {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+	}
+
 	.mobile-header-btn:active {
 		background: var(--bg-hover);
 	}
 
 	.mobile-header-btn.active {
 		color: var(--accent);
+	}
+
+	.mobile-header-menu-backdrop {
+		position: fixed;
+		inset: 0;
+		z-index: 40;
+		border: none;
+		padding: 0;
+		background: transparent;
+	}
+
+	.mobile-header-menu {
+		position: absolute;
+		top: calc(100% + 6px);
+		right: 8px;
+		z-index: 50;
+		display: flex;
+		flex-direction: column;
+		min-width: 200px;
+		max-width: calc(100vw - 16px);
+		padding: 4px;
+		background: var(--bg-primary);
+		border: 1px solid var(--border-color);
+		border-radius: 10px;
+		box-shadow: var(--shadow-lg);
+	}
+
+	.mobile-header-menu-item {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		min-height: 44px;
+		padding: 0 12px;
+		border: none;
+		border-radius: 8px;
+		background: none;
+		color: var(--text-primary);
+		font-family: inherit;
+		font-size: 14px;
+		text-align: left;
+		cursor: pointer;
+	}
+
+	.mobile-header-menu-item:hover:not(:disabled),
+	.mobile-header-menu-item:active:not(:disabled) {
+		background: var(--bg-hover);
+	}
+
+	.mobile-header-menu-item:focus-visible {
+		outline: 2px solid var(--accent);
+		outline-offset: -2px;
+	}
+
+	.mobile-header-menu-item.active {
+		color: var(--accent);
+	}
+
+	.mobile-header-menu-item:disabled {
+		opacity: 0.45;
+		cursor: default;
+	}
+
+	.mobile-header-menu-icon {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		width: 18px;
+		height: 18px;
+		flex-shrink: 0;
+	}
+
+	.mobile-header-menu-label {
+		flex: 1;
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
 	}
 
 	.mobile-content {
