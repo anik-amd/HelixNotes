@@ -102,31 +102,64 @@ jobs:
           await send('Page.enable');
           const expression = `(() => {
             const el = document.querySelector('.vault-picker');
-            const r = el?.getBoundingClientRect();
-            const cs = el ? getComputedStyle(el) : null;
+            const card = document.querySelector('.picker-card');
+            const h1 = document.querySelector('h1');
+            const button = document.querySelector('.btn-primary');
+            const info = (node) => {
+              if (!node) return null;
+              const r = node.getBoundingClientRect();
+              const cs = getComputedStyle(node);
+              return {
+                rect: { x: r.x, y: r.y, width: r.width, height: r.height },
+                color: cs.color,
+                backgroundColor: cs.backgroundColor,
+                opacity: cs.opacity,
+                visibility: cs.visibility,
+                display: cs.display,
+                transform: cs.transform,
+                filter: cs.filter,
+              };
+            };
             return {
               url: location.href,
               ready: document.readyState,
               title: document.title,
               bodyText: document.body.innerText.slice(0, 4000),
-              bodyRect: document.body.getBoundingClientRect().toJSON(),
-              rootRect: document.documentElement.getBoundingClientRect().toJSON(),
-              pickerRect: r ? { x: r.x, y: r.y, width: r.width, height: r.height } : null,
-              pickerDisplay: cs?.display,
-              pickerHeight: cs?.height,
-              pickerBackground: cs?.backgroundColor,
-              pickerColor: cs?.color,
+              body: info(document.body),
+              root: info(document.documentElement),
+              picker: info(el),
+              card: info(card),
+              h1: info(h1),
+              button: info(button),
+              elementsAtCenter: document.elementsFromPoint(innerWidth / 2, 120).map((n) => n.className || n.tagName).slice(0, 10),
               htmlClass: document.documentElement.className,
               platform: window.__HELIX_PLATFORM__,
               stylesheets: [...document.styleSheets].map((sheet) => sheet.href),
               scripts: [...document.scripts].map((script) => script.src),
+              animations: document.getAnimations().map((a) => ({ name: a.animationName, playState: a.playState, currentTime: a.currentTime })),
               rootHtml: document.documentElement.outerHTML.slice(0, 8000),
             };
           })()`;
           const result = await send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true });
           console.log('STATE', JSON.stringify(result.result?.result?.value ?? result, null, 2));
-          const shot = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
+          const shot = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false, fromSurface: true });
           fs.writeFileSync('cdp-screen.png', Buffer.from(shot.result.data, 'base64'));
+          const shotView = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false, fromSurface: false });
+          fs.writeFileSync('cdp-screen-view.png', Buffer.from(shotView.result.data, 'base64'));
+          await send('Runtime.evaluate', {
+            expression: `(() => {
+              document.documentElement.style.background = '#ff0000';
+              document.body.style.background = '#ff0000';
+              const picker = document.querySelector('.vault-picker');
+              if (picker) picker.style.background = '#ff0000';
+              const h1 = document.querySelector('h1');
+              if (h1) { h1.style.color = '#0000ff'; h1.style.fontSize = '72px'; }
+              return true;
+            })()`,
+            returnByValue: true,
+          });
+          const forced = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false, fromSurface: true });
+          fs.writeFileSync('cdp-screen-forced.png', Buffer.from(forced.result.data, 'base64'));
           fs.writeFileSync('cdp-events.json', JSON.stringify(events, null, 2));
           ws.close();
           EOF
@@ -181,6 +214,8 @@ jobs:
           path: |
             cdp-state.txt
             cdp-screen.png
+            cdp-screen-view.png
+            cdp-screen-forced.png
             cdp-events.json
             pages.json
             screen2.png
@@ -191,4 +226,4 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release upload android-noteinfo-bdd46ed cdp-state.txt cdp-screen.png cdp-events.json pages.json screen2.png logcat2.txt --clobber -R "$GITHUB_REPOSITORY" || true
+          gh release upload android-noteinfo-bdd46ed cdp-state.txt cdp-screen.png cdp-screen-view.png cdp-screen-forced.png cdp-events.json pages.json screen2.png logcat2.txt --clobber -R "$GITHUB_REPOSITORY" || true
