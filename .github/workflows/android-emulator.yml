@@ -132,4 +132,4 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release upload android-noteinfo-bdd46ed screen.png window.xml activities.txt logcat.txt webview.txt --clobber -R "$GITHUB_REPOSITORY" || true
+          gh release upload android-noteinfo-136 screen.png window.xml activities.txt logcat.txt webview.txt --clobber -R "$GITHUB_REPOSITORY" || true
