@@ -96,38 +96,10 @@ jobs:
           arch: x86_64
           profile: pixel_6
           disable-animations: true
-          script: |
-            set +e
-            adb install -r helixnotes-x86_64.apk
-            adb shell appops set com.helixnotes.app MANAGE_EXTERNAL_STORAGE allow
-            adb shell mkdir -p /sdcard/Documents/HelixNotes
-            printf '# Sample Note One\n\nHello from the seeded vault.\n' > sample-one.md
-            printf '# Sample Note Two\n\nSecond seeded note.\n' > sample-two.md
-            adb push sample-one.md "/sdcard/Documents/HelixNotes/Sample Note One.md"
-            adb push sample-two.md "/sdcard/Documents/HelixNotes/Sample Note Two.md"
-            adb shell wm size 720x1600
-            adb shell wm density 320
-            adb shell am start -W -n com.helixnotes.app/.MainActivity
-            sleep 10
-            sock=$(adb shell cat /proc/net/unix | grep -o 'webview_devtools_remote_[0-9]*' | head -n 1 | tr -d '\r')
-            echo "devtools socket: $sock"
-            adb forward tcp:9222 "localabstract:$sock"
-            node .github/scripts/android-smoke.mjs > smoke.txt 2>&1
-            smoke_status=$?
-            echo '--- SMOKE TEST ---'
-            cat smoke.txt
-            adb shell screencap -p /sdcard/screen.png
-            adb pull /sdcard/screen.png screen.png
-            adb shell uiautomator dump /sdcard/window.xml
-            adb pull /sdcard/window.xml window.xml
-            adb shell dumpsys activity activities > activities.txt
-            adb logcat -d > logcat.txt
-            adb logcat -d -s chromium:V Tauri:V RustWebView:V AndroidRuntime:E > webview.txt || true
-            echo '--- LOGCAT ERRORS ---'
-            grep -iE 'error|exception|fatal|crash|tauri|chromium' logcat.txt | tail -n 200 || true
-            exit $smoke_status
+          script: bash .github/scripts/android-smoke.sh
 
       - name: Upload logs and screenshot
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: android-emulator-debug
@@ -141,6 +113,7 @@ jobs:
           if-no-files-found: warn
 
       - name: Publish logs and screenshot
+        if: always()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |

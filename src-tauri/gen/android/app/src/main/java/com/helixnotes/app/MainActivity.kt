@@ -18,6 +18,12 @@ import java.io.File
 class MainActivity : TauriActivity() {
   private var webView: WebView? = null
 
+  // Test builds only: let the emulator smoke test drive the WebView over CDP.
+  override fun onCreate(savedInstanceState: android.os.Bundle?) {
+    WebView.setWebContentsDebuggingEnabled(true)
+    super.onCreate(savedInstanceState)
+  }
+
   companion object {
     private const val STORAGE_PERMISSION_REQUEST_CODE = 1001
   }
@@ -25,8 +31,6 @@ class MainActivity : TauriActivity() {
   override fun onWebViewCreate(webView: WebView) {
     super.onWebViewCreate(webView)
     this.webView = webView
-    // Test builds only: let the emulator smoke test drive the WebView over CDP.
-    WebView.setWebContentsDebuggingEnabled(true)
     webView.addJavascriptInterface(StorageBridge(this), "Android")
     // Render text at the size CSS specifies, ignoring the device's system font-size
     // accessibility setting (textZoom is otherwise tied to the system font scale). (#100)
