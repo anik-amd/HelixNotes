@@ -26,10 +26,31 @@ jobs:
         run: |
           cat > cdp-viewport.mjs <<'EOF'
           import fs from 'node:fs';
-          const pages = await (await fetch('http://127.0.0.1:9222/json')).json();
+          const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+          let pages;
+          for (let i = 0; i < 20; i++) {
+            try {
+              pages = await (await fetch('http://127.0.0.1:9222/json')).json();
+              if (pages.length) break;
+            } catch (error) {
+              console.log('FETCH_RETRY', i, String(error));
+            }
+            await sleep(1000);
+          }
+          if (!pages?.length) throw new Error('no CDP pages');
           const page = pages.find((p) => p.type === 'page') ?? pages[0];
-          const ws = new WebSocket(page.webSocketDebuggerUrl);
-          await new Promise((resolve, reject) => { ws.onopen = resolve; ws.onerror = reject; });
+          let ws;
+          for (let i = 0; i < 20; i++) {
+            try {
+              ws = new WebSocket(page.webSocketDebuggerUrl);
+              await new Promise((resolve, reject) => { ws.onopen = resolve; ws.onerror = reject; });
+              break;
+            } catch (error) {
+              console.log('WS_RETRY', i, String(error));
+              await sleep(1000);
+            }
+          }
+          if (!ws) throw new Error('no CDP websocket');
           let seq = 0;
           const waiting = new Map();
           ws.onmessage = (event) => {
@@ -77,13 +98,18 @@ jobs:
           disable-animations: true
           script: |
             adb install -r helixnotes-x86_64-debug.apk
+            adb shell am force-stop com.helixnotes.app
             adb shell am start -W -n com.helixnotes.app/.MainActivity
-            sleep 12
+            sleep 15
             pid=$(adb shell pidof com.helixnotes.app | tr -d '\r' | awk '{print $1}')
-            socket=$(adb shell cat /proc/net/unix | tr -d '\r' | grep -o 'webview_devtools_remote_[0-9]*' | head -n 1)
-            if [ -z "$socket" ] && [ -n "$pid" ]; then socket="webview_devtools_remote_$pid"; fi
+            echo "PID=$pid"
+            adb shell dumpsys activity activities | grep -E 'mResumedActivity|topResumedActivity' || true
+            if [ -n "$pid" ]; then socket="webview_devtools_remote_$pid"; else socket=$(adb shell cat /proc/net/unix | tr -d '\r' | grep -o 'webview_devtools_remote_[0-9]*' | head -n 1); fi
+            echo "SOCKET=$socket"
+            adb shell cat /proc/net/unix | grep webview_devtools_remote || true
             adb forward --remove tcp:9222 || true
             adb forward tcp:9222 localabstract:"$socket"
+            curl --retry 10 --retry-connrefused --retry-delay 1 -s http://127.0.0.1:9222/json || true
             node cdp-viewport.mjs > viewport-state.txt 2>&1 || true
             cat viewport-state.txt
 
