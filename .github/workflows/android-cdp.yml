@@ -131,6 +131,33 @@ jobs:
           ws.close();
           EOF
 
+      - name: Write emulator script
+        run: |
+          cat > run-cdp.sh <<'EOF'
+          #!/usr/bin/env bash
+          set -x
+          adb install -r helixnotes-x86_64-debug.apk
+          adb shell am start -W -n com.helixnotes.app/.MainActivity
+          sleep 12
+          pid=$(adb shell pidof com.helixnotes.app | tr -d '\r' | awk '{print $1}')
+          echo "PID=$pid"
+          adb shell cat /proc/net/unix | grep webview_devtools_remote || true
+          socket=$(adb shell cat /proc/net/unix | tr -d '\r' | grep -o 'webview_devtools_remote_[0-9]*' | head -n 1)
+          if [ -z "$socket" ] && [ -n "$pid" ]; then socket="webview_devtools_remote_$pid"; fi
+          echo "SOCKET=$socket"
+          test -n "$socket"
+          adb forward --remove tcp:9222 || true
+          adb forward tcp:9222 localabstract:"$socket"
+          curl -s http://127.0.0.1:9222/json > pages.json || true
+          cat pages.json
+          node cdp-inspect.mjs > cdp-state.txt 2>&1 || true
+          cat cdp-state.txt
+          adb shell screencap -p /sdcard/screen2.png
+          adb pull /sdcard/screen2.png screen2.png
+          adb logcat -d > logcat2.txt
+          EOF
+          chmod +x run-cdp.sh
+
       - name: Enable KVM
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
@@ -145,24 +172,7 @@ jobs:
           arch: x86_64
           profile: pixel_6
           disable-animations: true
-          script: |
-            set -x
-            adb install -r helixnotes-x86_64-debug.apk
-            adb shell am start -W -n com.helixnotes.app/.MainActivity
-            sleep 12
-            pid=$(adb shell pidof com.helixnotes.app | tr -d '\r')
-            echo "PID=$pid"
-            adb shell cat /proc/net/unix | grep webview_devtools_remote || true
-            socket=$(adb shell cat /proc/net/unix | grep -o 'webview_devtools_remote_[0-9]*' | head -n 1 | tr -d '\r')
-            test -n "$socket"
-            adb forward tcp:9222 localabstract:$socket
-            curl -s http://127.0.0.1:9222/json > pages.json || true
-            cat pages.json
-            node cdp-inspect.mjs > cdp-state.txt 2>&1 || true
-            cat cdp-state.txt
-            adb shell screencap -p /sdcard/screen2.png
-            adb pull /sdcard/screen2.png screen2.png
-            adb logcat -d > logcat2.txt
+          script: bash run-cdp.sh
 
       - name: Upload debug output
         uses: actions/upload-artifact@v4
