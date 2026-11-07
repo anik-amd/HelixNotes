@@ -30,9 +30,9 @@ pub fn run() {
         std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
     }
 
-    rustls::crypto::ring::default_provider()
-        .install_default()
-        .expect("Failed to install rustls crypto provider");
+    // A dependency may already have installed a rustls provider (for example through
+    // reqwest). Keep that provider instead of aborting the app during startup.
+    let _ = rustls::crypto::ring::default_provider().install_default();
 
     let config = commands::load_app_config();
     #[cfg(desktop)]
