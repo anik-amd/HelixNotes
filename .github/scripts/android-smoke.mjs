@@ -328,7 +328,7 @@ async function phaseB() {
 		})()`);
 		log('focused new note body:', focused);
 		if (!focused) fail('could not focus the new note body');
-		await cdp.send('Input.insertText', { text: 'Save check body text.' });
+		await cdp.send('Input.insertText', { text: 'SaveCheckBodyText' });
 
 		// The mobile editor must reserve room for the keyboard and formatting bar.
 		const bottomReserve = await cdp.evaluate(`(() => {
@@ -345,9 +345,9 @@ async function phaseB() {
 		}))()`);
 		log('save state:', JSON.stringify(saveState));
 		if (saveState.error) fail(`first save of a new note reported an error: ${saveState.error}`);
-		if (!saveState.body.includes('Save check body text.')) fail('typed body text was lost');
+		if (!saveState.body.includes('SaveCheckBodyText')) fail('typed body text was lost');
 
-		const onDisk = adbSoft('shell grep -rl "Save check body text." /sdcard/Documents/HelixNotes').trim();
+		const onDisk = adbSoft('shell grep -rl "SaveCheckBodyText" /sdcard/Documents/HelixNotes').trim();
 		log('saved note on disk:', JSON.stringify(onDisk));
 		if (!onDisk) fail('autosave did not write the typed body to disk');
 
