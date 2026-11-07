@@ -97,6 +97,17 @@
 	const LARGE_DOC_CHARS = 100_000;
 	let isLargeDoc = $state(false);
 	let editor: Editor | null = null;
+
+	// Keep the caret above the on-screen keyboard and the mobile formatting bar.
+	// The body wrapper reserves room for both, so the caret reveal lands in the
+	// visible area; nudge it once more after that layout change settles.
+	$effect(() => {
+		if (!isMobile || keyboardHeight <= 0) return;
+		tick().then(() => {
+			if ($readOnly) return;
+			editor?.commands.scrollIntoView();
+		});
+	});
 	const MixedListShortcuts = Extension.create({
 		name: 'mixedListShortcuts',
 		priority: 1000,
@@ -7374,7 +7385,10 @@
 		</div>
 		{/if}
 
-		<div class="editor-body-wrapper">
+		<div
+			class="editor-body-wrapper"
+			style={isMobile && !$sourceMode && !$viewerNote ? `padding-bottom: calc(${keyboardHeight}px + 52px + env(safe-area-inset-bottom))` : undefined}
+		>
 			{#if noteSearchOpen}
 				<div class="note-search-bar">
 					<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="opacity:0.5;flex-shrink:0"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
