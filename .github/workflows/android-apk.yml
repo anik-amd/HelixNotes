@@ -1,0 +1,90 @@
+name: Android APK
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apk:
+    name: Build debug APK (arm64)
+    runs-on: ubuntu-24.04
+    env:
+      ANDROID_HOME: /usr/local/lib/android/sdk
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.18.0
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Set up Android tools
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK and NDK
+        run: |
+          sdkmanager --install "platforms;android-36" "build-tools;36.0.0" "ndk;27.0.12077973"
+          echo "NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_ROOT=$ANDROID_HOME/ndk/27.0.12077973" >> "$GITHUB_ENV"
+          echo "sdk.dir=$ANDROID_HOME" > src-tauri/gen/android/local.properties
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build APK
+        run: pnpm tauri android build --apk --debug --target aarch64
+
+      - name: Collect APK
+        id: apk
+        run: |
+          apk=$(find src-tauri/gen/android/app/build/outputs/apk -name '*.apk' | head -n 1)
+          test -n "$apk"
+          echo "Found $apk"
+          cp "$apk" "HelixNotes_1.3.6_noteinfo_android_arm64.apk"
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: HelixNotes-noteinfo-android-arm64
+          path: HelixNotes_1.3.6_noteinfo_android_arm64.apk
+          if-no-files-found: error
+
+      - name: Publish test APK
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: android-noteinfo-bdd46ed
+          name: HelixNotes Note Info Android test build
+          body: |
+            Debug-signed arm64 APK for the Android Note Info and responsive header change.
+
+            Commit: bdd46ed
+          files: HelixNotes_1.3.6_noteinfo_android_arm64.apk
+          prerelease: true
+          token: ${{ secrets.GITHUB_TOKEN }}
