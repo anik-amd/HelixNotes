@@ -1,0 +1,135 @@
+name: Android Emulator Test
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  emulator:
+    name: Launch APK on emulator
+    runs-on: ubuntu-24.04
+    env:
+      ANDROID_HOME: /usr/local/lib/android/sdk
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.18.0
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-linux-android
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install Android SDK and NDK
+        run: |
+          sdkmanager_path=$(command -v sdkmanager || find "$ANDROID_HOME/cmdline-tools" -name sdkmanager | head -n 1)
+          test -n "$sdkmanager_path"
+          yes | "$sdkmanager_path" --licenses >/dev/null || true
+          "$sdkmanager_path" --install "platforms;android-36" "build-tools;36.0.0" "ndk;27.0.12077973"
+          echo "NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_ROOT=$ANDROID_HOME/ndk/27.0.12077973" >> "$GITHUB_ENV"
+          echo "sdk.dir=$ANDROID_HOME" > src-tauri/gen/android/local.properties
+
+      - name: Create test signing key
+        run: |
+          keytool -genkeypair -v \
+            -keystore "$RUNNER_TEMP/helixnotes-test.jks" \
+            -alias helixnotes \
+            -keyalg RSA -keysize 2048 -validity 10000 \
+            -storepass helixnotes -keypass helixnotes \
+            -dname "CN=HelixNotes Test, OU=Test, O=HelixNotes, L=Test, ST=Test, C=US"
+          cat > src-tauri/gen/android/keystore.properties <<EOF
+          storeFile=$RUNNER_TEMP/helixnotes-test.jks
+          storePassword=helixnotes
+          keyAlias=helixnotes
+          keyPassword=helixnotes
+          EOF
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build x86_64 APK
+        run: pnpm tauri android build --apk --target x86_64
+
+      - name: Collect APK
+        run: |
+          apk=$(find src-tauri/gen/android/app/build/outputs/apk -name '*release*.apk' | head -n 1)
+          test -n "$apk"
+          cp "$apk" helixnotes-x86_64.apk
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Run emulator and capture logs
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: true
+          script: |
+            adb install -r helixnotes-x86_64.apk
+            adb shell am start -W -n com.helixnotes.app/.MainActivity
+            sleep 12
+            adb shell screencap -p /sdcard/screen.png
+            adb pull /sdcard/screen.png screen.png
+            adb shell uiautomator dump /sdcard/window.xml
+            adb pull /sdcard/window.xml window.xml
+            adb shell dumpsys activity activities > activities.txt
+            adb logcat -d > logcat.txt
+            adb logcat -d -s chromium:V Tauri:V RustWebView:V AndroidRuntime:E > webview.txt || true
+            echo '--- UI DUMP ---'
+            cat window.xml
+            echo '--- ACTIVITY ---'
+            cat activities.txt
+            echo '--- WEBVIEW LOG ---'
+            cat webview.txt
+            echo '--- LOGCAT ERRORS ---'
+            grep -iE 'error|exception|fatal|crash|tauri|chromium' logcat.txt | tail -n 200 || true
+
+      - name: Upload logs and screenshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-emulator-debug
+          path: |
+            screen.png
+            window.xml
+            activities.txt
+            logcat.txt
+            webview.txt
+          if-no-files-found: warn
+
+      - name: Publish logs and screenshot
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload android-noteinfo-bdd46ed screen.png window.xml activities.txt logcat.txt webview.txt --clobber -R "$GITHUB_REPOSITORY" || true

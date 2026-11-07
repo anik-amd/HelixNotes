@@ -70,8 +70,10 @@
 	import { isMobile, isAndroid } from '$lib/platform';
 	import ResizeHandle from './ResizeHandle.svelte';
 
-	let { onMoveToTrash }: {
+	let { onMoveToTrash, onInfoChange }: {
 		onMoveToTrash?: (path: string) => Promise<boolean>;
+		/** Lets the mobile header reflect whether the note info panel is open. */
+		onInfoChange?: (open: boolean) => void;
 	} = $props();
 
 	const modKey = navigator.platform.startsWith('Mac') ? '⌘' : 'Ctrl';
@@ -472,6 +474,7 @@
 
 	// Info panel
 	let showInfo = $state(false);
+	$effect(() => { onInfoChange?.(showInfo); });
 	let wordCount = $state(0);
 	let charCount = $state(0);
 	let infoPathCopyState = $state<'idle' | 'copied' | 'error'>('idle');
@@ -5421,6 +5424,10 @@
 
 	export function toggleHistoryPanel() {
 		toggleHistory();
+	}
+
+	export function toggleInfoPanel() {
+		toggleInfo();
 	}
 
 	export function triggerAiMenu() {
