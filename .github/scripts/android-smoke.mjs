@@ -32,9 +32,12 @@ function adbSoft(command) {
 
 async function waitForSocket() {
 	for (let i = 0; i < 60; i += 1) {
-		const out = adbSoft('shell cat /proc/net/unix');
-		const match = out.match(/webview_devtools_remote_\d+/);
-		if (match) return match[0];
+		const pid = adbSoft(`shell pidof ${PKG}`).trim();
+		if (pid) {
+			const socket = `webview_devtools_remote_${pid}`;
+			const out = adbSoft('shell cat /proc/net/unix');
+			if (out.includes(socket)) return socket;
+		}
 		await sleep(500);
 	}
 	throw new Error('no WebView devtools socket');
@@ -177,6 +180,15 @@ async function phaseA() {
 
 		const primary = await cdp.evaluate(primaryButtonText);
 		log('primary button:', JSON.stringify(primary));
+
+		const bridge = await cdp.evaluate(`(() => ({
+			android: typeof window.Android,
+			hasStoragePermission: typeof window.Android?.hasStoragePermission,
+			requestStoragePermission: typeof window.Android?.requestStoragePermission,
+			prepareVaultDir: typeof window.Android?.prepareVaultDir,
+		}))()`);
+		log('android bridge:', JSON.stringify(bridge));
+		if (bridge.android === 'undefined') fail('window.Android bridge is missing');
 		if (primary !== 'Grant File Access') {
 			fail(`primary button should be "Grant File Access" without storage access, saw ${JSON.stringify(primary)}`);
 		}
@@ -186,8 +198,18 @@ async function phaseA() {
 		if (!clicked) fail('no Grant File Access button');
 
 		await sleep(4000);
-		const resumed = adbSoft('shell dumpsys activity activities');
-		const openedSettings = /mResumedActivity.*(Settings|permission)/i.test(resumed) || /All files access/i.test(resumed);
+		const focus = adbSoft('shell dumpsys window')
+			.split('\n')
+			.filter((line) => /mCurrentFocus|mFocusedApp/i.test(line))
+			.join(' | ');
+		const resumed = adbSoft('shell dumpsys activity activities')
+			.split('\n')
+			.filter((line) => /ResumedActivity|topResumedActivity/i.test(line))
+			.slice(0, 3)
+			.join(' | ');
+		log('focus:', focus);
+		log('resumed:', resumed);
+		const openedSettings = /settings|permission/i.test(`${focus} ${resumed}`);
 		log('system settings opened:', openedSettings);
 		if (!openedSettings) fail('Grant File Access did not open the system permission screen');
 
