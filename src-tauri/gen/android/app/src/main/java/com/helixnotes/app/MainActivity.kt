@@ -33,9 +33,6 @@ class MainActivity : TauriActivity() {
     // paragraph font-size and line-height from viewport heuristics and ignores our CSS (only
     // size + line-height were affected; font-family was fine). NORMAL turns it off. (#100)
     webView.settings.layoutAlgorithm = android.webkit.WebSettings.LayoutAlgorithm.NORMAL
-    // Honor the viewport meta tag's scale, which is how the Interface Scale setting is applied
-    // on Android (WebView zoom APIs are not exposed through Tauri here). (#288)
-    webView.settings.useWideViewPort = true
   }
 
   override fun onPause() {
