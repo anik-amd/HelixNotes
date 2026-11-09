@@ -71,7 +71,6 @@
 	import { normalizeStartupView, resolveStartupTarget } from '$lib/utils/startup-view';
 	import { isCurrentVaultEvent, sameNoteTags, updateNoteList } from '$lib/utils/note-list-updates';
 	import { beginNoteNavigation, isCurrentNoteNavigation, cancelNoteNavigation } from '$lib/utils/note-navigation';
-import { visibleMobileHeaderActionCount } from '$lib/utils/mobile-header-actions';
 	import { isPathInDirectory, isTrashedNote } from '$lib/utils/paths';
 	import { get } from 'svelte/store';
 	import type { VaultState, FileEvent, NotebookEntry, NoteEntry, TaskItem, SearchResult } from '$lib/types';
@@ -204,9 +203,8 @@ import { visibleMobileHeaderActionCount } from '$lib/utils/mobile-header-actions
 	let noteRelativePath = $derived($activeNotePath && $appConfig?.active_vault ? $activeNotePath.replace($appConfig.active_vault + '/', '') : '');
 	let isQuickAccess = $derived(noteRelativePath ? $quickAccessPaths.includes(noteRelativePath) : false);
 
-	// Note actions in the mobile header collapse into a three-dot menu when the
-	// header runs out of room (phone portrait, split screen, or many enabled actions).
-	const MOBILE_HEADER_TITLE_MIN_WIDTH = 96;
+	// Only the actions used while writing stay in the header row. Everything else
+	// lives in the three-dot menu, so the row fits a phone at any width.
 	const mobileHeaderIcons = {
 		edit: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>',
 		view: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>',
@@ -233,9 +231,6 @@ import { visibleMobileHeaderActionCount } from '$lib/utils/mobile-header-actions
 	}
 
 	let infoOpen = $state(false);
-	let mobileHeaderEl = $state<HTMLDivElement | null>(null);
-	let mobileActionsEl = $state<HTMLDivElement | null>(null);
-	let mobileActionsWidth = $state(-1);
 	let mobileActionMenu = $state(false);
 	let mobileActionMenuEl = $state<HTMLDivElement | null>(null);
 	let mobileActionMenuTrigger = $state<HTMLButtonElement | null>(null);
@@ -361,65 +356,12 @@ import { visibleMobileHeaderActionCount } from '$lib/utils/mobile-header-actions
 		return actions;
 	});
 
-	let visibleMobileEditorActions = $derived(
-		mobileActionsWidth < 0
-			? mobileEditorActions
-			: mobileEditorActions.slice(0, visibleMobileHeaderActionCount({
-				availableWidth: mobileActionsWidth,
-				actionCount: mobileEditorActions.length,
-			}))
+	// Everything the editor can do is in the menu; the row keeps only the
+	// actions used while writing.
+	const INLINE_MOBILE_ACTION_IDS = ['edit', 'find', 'info'];
+	let inlineMobileEditorActions = $derived(
+		mobileEditorActions.filter(action => INLINE_MOBILE_ACTION_IDS.includes(action.id))
 	);
-	let overflowMobileEditorActions = $derived(
-		mobileActionsWidth < 0
-			? []
-			: mobileEditorActions.slice(visibleMobileEditorActions.length)
-	);
-
-	function measureMobileHeader() {
-		const header = mobileHeaderEl;
-		const actions = mobileActionsEl;
-		if (!header || !actions) return;
-		const headerStyle = getComputedStyle(header);
-		const padding = parseFloat(headerStyle.paddingLeft) + parseFloat(headerStyle.paddingRight);
-		const gap = parseFloat(headerStyle.gap) || 0;
-		let used = 0;
-		let visibleChildren = 0;
-		let titleReserve = 0;
-		for (const child of Array.from(header.children)) {
-			if (child === actions) {
-				visibleChildren += 1;
-				continue;
-			}
-			const el = child as HTMLElement;
-			const childStyle = getComputedStyle(el);
-			if (childStyle.position === 'absolute' || childStyle.position === 'fixed' || childStyle.display === 'none') continue;
-			visibleChildren += 1;
-			if (el.classList.contains('mobile-header-title')) {
-				titleReserve = MOBILE_HEADER_TITLE_MIN_WIDTH;
-				continue;
-			}
-			used += el.offsetWidth;
-		}
-		const gaps = Math.max(0, visibleChildren - 1) * gap;
-		mobileActionsWidth = Math.max(0, header.clientWidth - used - titleReserve - gaps - padding);
-	}
-
-	$effect(() => {
-		// Re-measure when the header contents or the layout mode change.
-		void isMobile;
-		void $mobileView;
-		void $activeNotePath;
-		void mobileEditorActions.length;
-		const header = mobileHeaderEl;
-		if (!isMobile || !header) return;
-		measureMobileHeader();
-		const observer = new ResizeObserver(() => measureMobileHeader());
-		observer.observe(header);
-		for (const child of Array.from(header.children)) {
-			if (child !== mobileActionsEl) observer.observe(child);
-		}
-		return () => observer.disconnect();
-	});
 
 	async function toggleMobileActionMenu() {
 		if (mobileActionMenu) {
@@ -1381,7 +1323,7 @@ import { visibleMobileHeaderActionCount } from '$lib/utils/mobile-header-actions
 	<!-- ═══ MOBILE LAYOUT ═══ -->
 	<div class="mobile-shell">
 		<!-- Mobile Header -->
-		<div class="mobile-header" bind:this={mobileHeaderEl}>
+		<div class="mobile-header">
 			{#if $mobileView !== 'sidebar'}
 				<button class="mobile-header-btn" onclick={mobileBack} aria-label="Go back">
 					<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -1413,9 +1355,9 @@ import { visibleMobileHeaderActionCount } from '$lib/utils/mobile-header-actions
 					</button>
 				{/if}
 			{/if}
-			<div class="mobile-header-actions" bind:this={mobileActionsEl}>
+			<div class="mobile-header-actions">
 				{#if $mobileView === 'editor'}
-					{#each visibleMobileEditorActions as action (action.id)}
+					{#each inlineMobileEditorActions as action (action.id)}
 						<button
 							class="mobile-header-btn"
 							class:active={action.active}
@@ -1427,23 +1369,21 @@ import { visibleMobileHeaderActionCount } from '$lib/utils/mobile-header-actions
 							<span class="mobile-header-btn-icon" class:sync-spin={action.id === 'sync' && $syncState.running}>{@html action.icon}</span>
 						</button>
 					{/each}
-					{#if overflowMobileEditorActions.length > 0}
-						<button
-							class="mobile-header-btn"
-							class:active={mobileActionMenu}
-							onclick={toggleMobileActionMenu}
-							title="More actions"
-							aria-label="More actions"
-							aria-haspopup="menu"
-							aria-expanded={mobileActionMenu}
-							aria-controls={mobileActionMenu ? mobileActionMenuId : undefined}
-							bind:this={mobileActionMenuTrigger}
-						>
-							<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-								<circle cx="12" cy="5" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="12" cy="19" r="1.7"/>
-							</svg>
-						</button>
-					{/if}
+					<button
+						class="mobile-header-btn"
+						class:active={mobileActionMenu}
+						onclick={toggleMobileActionMenu}
+						title="All note actions"
+						aria-label="All note actions"
+						aria-haspopup="menu"
+						aria-expanded={mobileActionMenu}
+						aria-controls={mobileActionMenu ? mobileActionMenuId : undefined}
+						bind:this={mobileActionMenuTrigger}
+					>
+						<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+							<circle cx="12" cy="5" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="12" cy="19" r="1.7"/>
+						</svg>
+					</button>
 				{:else}
 					<button class="mobile-header-btn" onclick={() => ($showSearch = true)} title="Search">
 						<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -1474,18 +1414,18 @@ import { visibleMobileHeaderActionCount } from '$lib/utils/mobile-header-actions
 					</button>
 				{/if}
 			</div>
-			{#if mobileActionMenu && overflowMobileEditorActions.length > 0}
+			{#if mobileActionMenu}
 				<button type="button" class="mobile-header-menu-backdrop" tabindex="-1" aria-label="Close menu" onclick={() => closeMobileActionMenu()}></button>
 				<div
 					class="mobile-header-menu"
 					id={mobileActionMenuId}
 					role="menu"
 					tabindex="-1"
-					aria-label="More note actions"
+					aria-label="All note actions"
 					bind:this={mobileActionMenuEl}
 					onkeydown={onMobileActionMenuKeydown}
 				>
-					{#each overflowMobileEditorActions as action (action.id)}
+					{#each mobileEditorActions as action (action.id)}
 						<button
 							type="button"
 							class="mobile-header-menu-item"
@@ -1494,7 +1434,7 @@ import { visibleMobileHeaderActionCount } from '$lib/utils/mobile-header-actions
 							role="menuitem"
 							onclick={() => runMobileEditorAction(action)}
 						>
-							<span class="mobile-header-menu-icon">{@html action.icon}</span>
+							<span class="mobile-header-menu-icon" class:sync-spin={action.id === 'sync' && $syncState.running}>{@html action.icon}</span>
 							<span class="mobile-header-menu-label">{action.label}</span>
 						</button>
 					{/each}
@@ -1865,6 +1805,8 @@ import { visibleMobileHeaderActionCount } from '$lib/utils/mobile-header-actions
 		flex-direction: column;
 		min-width: 200px;
 		max-width: calc(100vw - 16px);
+		max-height: calc(100vh - 70px);
+		overflow-y: auto;
 		padding: 4px;
 		background: var(--bg-primary);
 		border: 1px solid var(--border-color);
