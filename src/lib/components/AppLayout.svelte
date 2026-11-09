@@ -356,11 +356,13 @@
 		return actions;
 	});
 
-	// Everything the editor can do is in the menu; the row keeps only the
-	// actions used while writing.
-	const INLINE_MOBILE_ACTION_IDS = ['edit', 'find', 'info'];
+	// The row keeps the actions used while writing; the menu holds the rest.
+	const INLINE_MOBILE_ACTION_IDS = ['edit', 'find', 'pin'];
 	let inlineMobileEditorActions = $derived(
 		mobileEditorActions.filter(action => INLINE_MOBILE_ACTION_IDS.includes(action.id))
+	);
+	let menuMobileEditorActions = $derived(
+		mobileEditorActions.filter(action => !INLINE_MOBILE_ACTION_IDS.includes(action.id))
 	);
 
 	async function toggleMobileActionMenu() {
@@ -1373,8 +1375,8 @@
 						class="mobile-header-btn"
 						class:active={mobileActionMenu}
 						onclick={toggleMobileActionMenu}
-						title="All note actions"
-						aria-label="All note actions"
+						title="More note actions"
+						aria-label="More note actions"
 						aria-haspopup="menu"
 						aria-expanded={mobileActionMenu}
 						aria-controls={mobileActionMenu ? mobileActionMenuId : undefined}
@@ -1421,11 +1423,11 @@
 					id={mobileActionMenuId}
 					role="menu"
 					tabindex="-1"
-					aria-label="All note actions"
+					aria-label="More note actions"
 					bind:this={mobileActionMenuEl}
 					onkeydown={onMobileActionMenuKeydown}
 				>
-					{#each mobileEditorActions as action (action.id)}
+					{#each menuMobileEditorActions as action (action.id)}
 						<button
 							type="button"
 							class="mobile-header-menu-item"
