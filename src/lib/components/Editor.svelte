@@ -96,6 +96,10 @@
 
 	// Track virtual keyboard height on mobile via visualViewport
 	let keyboardHeight = $state(0);
+
+	// Space under the editor content while the mobile formatting bar is visible:
+	// 46px bar (38px buttons plus 4px padding) and 6px clearance above it.
+	const MOBILE_FORMATTING_BAR_SPACE = 52;
 	$effect(() => {
 		if (!isMobile || !window.visualViewport) return;
 		const vv = window.visualViewport;
@@ -113,6 +117,17 @@
 	const LARGE_DOC_CHARS = 100_000;
 	let isLargeDoc = $state(false);
 	let editor: Editor | null = null;
+
+	// Keep the caret above the on-screen keyboard and the mobile formatting bar.
+	// The body wrapper reserves room for both, so the caret reveal lands in the
+	// visible area; nudge it once more after that layout change settles.
+	$effect(() => {
+		if (!isMobile || keyboardHeight <= 0) return;
+		tick().then(() => {
+			if ($readOnly) return;
+			editor?.commands.scrollIntoView();
+		});
+	});
 	const MixedListShortcuts = Extension.create({
 		name: 'mixedListShortcuts',
 		priority: 1000,
@@ -8297,7 +8312,10 @@
 		</div>
 		{/if}
 
-		<div class="editor-body-wrapper">
+		<div
+			class="editor-body-wrapper"
+			style={isMobile && !$sourceMode && !$viewerNote ? `padding-bottom: calc(${keyboardHeight}px + ${MOBILE_FORMATTING_BAR_SPACE}px + env(safe-area-inset-bottom))` : undefined}
+		>
 			{#if noteSearchOpen}
 				<div class="note-search-bar">
 					<button type="button" class="note-search-btn note-replace-toggle" class:open={noteReplaceOpen} aria-label="Replace" aria-expanded={noteReplaceOpen} title={`Replace (${bindingToKeys($keybindings['replace-in-note']).join('+')})`} onmousedown={(e) => e.preventDefault()} onclick={() => { noteReplaceOpen = !noteReplaceOpen; }}>
