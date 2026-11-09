@@ -106,6 +106,7 @@
 	let editor = $state<Editor>();
 	let outlineOpen = $state(false);
 	let outlinePanelId = $state('');
+	let noteInfoOpen = $state(false);
 	let mobileNoteMenuOpen = $state(false);
 	let mobileNoteMenuWrapper = $state<HTMLDivElement>();
 	let mobileNoteMenuTrigger = $state<HTMLButtonElement>();
@@ -1344,6 +1345,12 @@
 						</svg>
 						{#if inMenu}<span>History</span>{/if}
 					</button>
+					<button class={inMenu ? 'mobile-note-menu-item' : 'mobile-header-btn'} type="button" role={inMenu ? 'menuitem' : undefined} class:active={noteInfoOpen} onclick={() => editor?.toggleInfoPanel()} title="Note info" aria-label="Note info" aria-expanded={noteInfoOpen}>
+						<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+							<circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/>
+						</svg>
+						{#if inMenu}<span>Note info</span>{/if}
+					</button>
 					{#if $appConfig?.enable_wiki_links}
 					<button class={inMenu ? 'mobile-note-menu-item' : 'mobile-header-btn'} type="button" role={inMenu ? 'menuitem' : undefined} onclick={() => editor?.toggleGraphView()} title="Graph View">
 						<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -1436,7 +1443,7 @@
 				<NoteList bind:this={noteList} onNoteSelected={handleNoteSelected} onBeforeNoteSwitch={() => editor?.flushSave() ?? Promise.resolve(true)} onBeforeNoteDuplicate={() => editor?.forceSave() ?? Promise.resolve(true)} onBeforePathMutation={() => editor?.beginPathMutation() ?? Promise.resolve(() => {})} onPathsMoved={handlePathsMoved} onUpdateActiveNote={updateActiveNoteMetadata} onTagsChanged={handleTagsChanged} onRefreshTags={() => { if (!isMobile) void sidebar?.refreshTags(); }} onNoteMoved={() => sidebar?.refresh()} onNoteCreated={(token) => { editor?.focusTitle(token); }} onToggleTask={toggleTask} onSetTaskPriority={changeTaskPriority} onSetTaskDue={changeTaskDue} />
 			</div>
 			<div class="mobile-panel mobile-editor-panel" class:active={$mobileView === 'editor' || tabletLayout}>
-				<Editor bind:this={editor} onMoveToTrash={trashOpenNote} onOutlineChange={handleOutlineChange} onShowTag={showTagNotes} />
+				<Editor bind:this={editor} onMoveToTrash={trashOpenNote} onOutlineChange={handleOutlineChange} onShowTag={showTagNotes} onInfoChange={(open) => (noteInfoOpen = open)} />
 			</div>
 		</div>
 
