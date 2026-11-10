@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=HelixNotes
+Comment=Write and organize local Markdown notes
+Exec=helixnotes %f
+Icon=com.helixnotes.app
+Terminal=false
+Categories=Office;
+MimeType=text/markdown;text/x-markdown;
+Keywords=Markdown;tasks;wiki;

@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.helixnotes.app</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>AGPL-3.0-or-later</project_license>
+  <name>HelixNotes</name>
+  <summary>Write and organize local Markdown notes</summary>
+  <developer id="com.helixnotes">
+    <name>HelixNotes</name>
+  </developer>
+  <description>
+    <p>HelixNotes stores your notes as standard Markdown files in a folder you
+    choose. Write in the Markdown editor, organize notes with tags and wiki links,
+    and find them with full-text search.</p>
+    <p>The Tasks view gathers checklists from your notes into a list or calendar.</p>
+  </description>
+  <launchable type="desktop-id">com.helixnotes.app.desktop</launchable>
+  <url type="homepage">https://helixnotes.com</url>
+  <url type="vcs-browser">https://gitlab.com/ArkHost/HelixNotes</url>
+  <provides>
+    <binary>helixnotes</binary>
+  </provides>
+  <screenshots>
+    <screenshot type="default">
+      <caption>Markdown editor</caption>
+      <image type="source">https://cdn.helixnotes.com/assets/screenshots/screenshot-1.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Tasks calendar</caption>
+      <image type="source">https://cdn.helixnotes.com/assets/screenshots/screenshot-2.png</image>
+    </screenshot>
+  </screenshots>
+</component>
