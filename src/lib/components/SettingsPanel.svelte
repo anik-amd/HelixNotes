@@ -3881,11 +3881,19 @@
 	}
 
 	.settings-panel.mobile .font-size-options {
+		display: grid;
+		grid-template-columns: repeat(auto-fit, minmax(85px, 1fr));
 		gap: 8px;
 	}
 
 	.settings-panel.mobile .font-size-btn {
 		padding: 12px 6px;
+	}
+
+	@media (max-width: 480px) {
+		.settings-panel.mobile .two-col-sections {
+			grid-template-columns: minmax(0, 1fr);
+		}
 	}
 
 	/* ── Custom Themes ── */

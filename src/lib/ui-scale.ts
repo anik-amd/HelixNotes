@@ -34,14 +34,29 @@ export const uiScalePresets: { label: string; value: number }[] = isAndroid
 // positioned from clientX/getBoundingClientRect. Pinning the viewport scale instead shrinks the
 // layout viewport, like the system "Display size" setting, so all coordinates stay in CSS px.
 // Needs useWideViewPort, which MainActivity enables.
-function applyAndroidViewportScale(scale: number) {
+let androidUiScale = defaultUiScale;
+let androidResizeListenerInstalled = false;
+
+function updateAndroidViewportScale() {
 	const meta = document.querySelector('meta[name="viewport"]');
 	if (!meta) return;
-	scale = Math.min(scale, maxAndroidUiScale);
-	meta.setAttribute(
-		'content',
-		`initial-scale=${scale}, minimum-scale=${scale}, maximum-scale=${scale}, user-scalable=no, viewport-fit=cover`
-	);
+	const viewport = window.visualViewport;
+	// WebView can keep its 980px fallback layout if only a scale is specified. Give it the
+	// actual visible width in CSS px, including in landscape and split-screen windows.
+	const availableWidth = Math.round(viewport ? viewport.width * viewport.scale : screen.width);
+	const scale = Math.min(androidUiScale, maxAndroidUiScale, Math.max(1, availableWidth / minAndroidLayoutWidth));
+	const width = Math.floor(availableWidth / scale);
+	const content = `width=${width}, initial-scale=${scale}, minimum-scale=${scale}, maximum-scale=${scale}, user-scalable=no, viewport-fit=cover`;
+	if (meta.getAttribute('content') !== content) meta.setAttribute('content', content);
+}
+
+function applyAndroidViewportScale(scale: number) {
+	androidUiScale = scale;
+	updateAndroidViewportScale();
+	if (!androidResizeListenerInstalled) {
+		window.addEventListener('resize', updateAndroidViewportScale);
+		androidResizeListenerInstalled = true;
+	}
 }
 
 export async function applyUiScale(scale: number) {
