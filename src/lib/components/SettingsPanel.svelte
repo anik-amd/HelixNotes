@@ -3870,7 +3870,13 @@
 		transform: translateX(18px);
 	}
 
+	.settings-panel.mobile .setting-options {
+		display: grid;
+		grid-template-columns: repeat(auto-fit, minmax(min(120px, 100%), 1fr));
+	}
+
 	.settings-panel.mobile .option-btn {
+		min-width: 0;
 		padding: 12px 10px;
 		font-size: 14px;
 	}
