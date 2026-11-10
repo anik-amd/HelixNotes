@@ -3886,6 +3886,7 @@
 		font-size: 14px;
 	}
 
+	.settings-panel.mobile .font-family-options,
 	.settings-panel.mobile .font-size-options {
 		display: grid;
 		grid-template-columns: repeat(auto-fit, minmax(85px, 1fr));
