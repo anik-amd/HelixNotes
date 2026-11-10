@@ -34,9 +34,12 @@ Choose vault folders using the folder picker. Flatpak grants access to the chose
 folders through its document portal; the package does not request access to the
 whole home directory. Its settings are separate from native installations.
 The document portal does not forward external file-change notifications, so this
-build checks for changes every two seconds using the existing polling watcher.
-Metadata polling can miss edits within the same timestamp second or edits that
-preserve an earlier modification time. Reopen the vault to refresh those changes.
+build checks visible notes and notebooks about every two seconds in small vaults.
+The interval grows with scan cost in larger vaults to limit background CPU use.
+It compares file
+size and precise modification/change timestamps, including changes made
+while preserving a note's modification time. Attachments and hidden app data are
+excluded from these scans; note contents are read only when a change is detected.
 
 The build sets `HELIXNOTES_INSTALL_TYPE=flatpak`, which suppresses the in-app
 updater. Install a newer bundle to update this local package. Automatic Flatpak
