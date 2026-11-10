@@ -1,6 +1,6 @@
 [package]
 name = "helixnotes"
-version = "1.3.6"
+version = "1.3.7"
 description = "Local markdown note-taking app"
 authors = ["HelixNotes"]
 license = "AGPL-3.0-or-later"
