@@ -1,0 +1,138 @@
+name: Android APK
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apk:
+    name: Build signed APK (arm64)
+    runs-on: ubuntu-24.04
+    env:
+      ANDROID_HOME: /usr/local/lib/android/sdk
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.18.0
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install Android SDK and NDK
+        run: |
+          sdkmanager_path=$(command -v sdkmanager || find "$ANDROID_HOME/cmdline-tools" -name sdkmanager | head -n 1)
+          test -n "$sdkmanager_path"
+          yes | "$sdkmanager_path" --licenses >/dev/null || true
+          "$sdkmanager_path" --install "platforms;android-36" "build-tools;36.0.0" "ndk;27.0.12077973"
+          echo "NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_ROOT=$ANDROID_HOME/ndk/27.0.12077973" >> "$GITHUB_ENV"
+          echo "sdk.dir=$ANDROID_HOME" > src-tauri/gen/android/local.properties
+
+      - name: Create test signing key
+        env:
+          ANDROID_TEST_KEYSTORE_B64: ${{ secrets.ANDROID_TEST_KEYSTORE_B64 }}
+        run: |
+          if [ -n "$ANDROID_TEST_KEYSTORE_B64" ]; then
+            printf '%s' "$ANDROID_TEST_KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/helixnotes-test.jks"
+            echo "Using the stable test keystore from repository secrets."
+          else
+            keytool -genkeypair -v \
+              -keystore "$RUNNER_TEMP/helixnotes-test.jks" \
+              -alias helixnotes \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -storepass helixnotes -keypass helixnotes \
+              -dname "CN=HelixNotes Test, OU=Test, O=HelixNotes, L=Test, ST=Test, C=US"
+            echo "WARNING: no stable test keystore secret; this APK cannot replace the previous test build."
+          fi
+          cat > src-tauri/gen/android/keystore.properties <<EOF
+          storeFile=$RUNNER_TEMP/helixnotes-test.jks
+          storePassword=helixnotes
+          keyAlias=helixnotes
+          keyPassword=helixnotes
+          EOF
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build APK
+        run: pnpm tauri android build --apk --target aarch64
+
+      - name: Collect APK
+        id: apk
+        run: |
+          apk=$(find src-tauri/gen/android/app/build/outputs/apk -name '*release*.apk' | head -n 1)
+          test -n "$apk"
+          echo "Found $apk"
+          cp "$apk" "HelixNotes_1.3.7_noteinfo3_android_arm64.apk"
+
+      - name: Verify APK manifest
+        run: |
+          aapt2=$(ls "$ANDROID_HOME"/build-tools/*/aapt2 | sort -V | tail -n 1)
+          echo "aapt2: $aapt2"
+          {
+            echo "=== permissions ==="
+            "$aapt2" dump permissions HelixNotes_1.3.7_noteinfo3_android_arm64.apk
+            echo "=== badging ==="
+            "$aapt2" dump badging HelixNotes_1.3.7_noteinfo3_android_arm64.apk | grep -E "^package:|sdkVersion|targetSdkVersion|application-label"
+          } | tee apk-permissions.txt
+          grep -q 'android.permission.MANAGE_EXTERNAL_STORAGE' apk-permissions.txt
+          grep -q 'android.permission.INTERNET' apk-permissions.txt
+          echo "APK declares the storage permissions."
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: HelixNotes-noteinfo-android-arm64
+          path: |
+            HelixNotes_1.3.7_noteinfo3_android_arm64.apk
+            apk-permissions.txt
+          if-no-files-found: error
+
+      - name: Publish test APK
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: android-noteinfo-137
+          name: HelixNotes Note Info Android test build
+          body: |
+            Signed arm64 APK: official v1.3.6 plus three frontend fixes.
+
+            - Note Info button in the mobile editor header (overflow menu when narrow)
+            - The typing caret stays above the keyboard and the formatting bar
+            - New notes no longer report a false save conflict on their first save
+
+            Base: v1.3.6 (e1f1ef0). No backend, vault, or sync behaviour changed.
+
+            Base: v1.3.6 (e1f1ef0)
+          files: |
+            HelixNotes_1.3.7_noteinfo3_android_arm64.apk
+            apk-permissions.txt
+          overwrite_files: true
+          prerelease: true
+          token: ${{ secrets.GITHUB_TOKEN }}
